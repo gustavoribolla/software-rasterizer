@@ -6,15 +6,16 @@
 """
 Biblioteca Gráfica / Graphics Library.
 
-Desenvolvido por: Luigi
+Desenvolvido por: Gustavo Colombi Ribolla e Luigi Orlandi Quinze
 Disciplina: Computação Gráfica
-Data: 19 de Agosto de 2026
+Data: 24/08/2026
 """
 
 import time         # Para operações com tempo
 import gpu          # Simula os recursos de uma GPU
 import math         # Funções matemáticas
-import numpy as np  # Biblioteca do Numpy
+import numpy as np  # Biblioteca do NumPy
+
 
 class GL:
     """Classe que representa a biblioteca gráfica (Graphics Library)."""
@@ -26,7 +27,7 @@ class GL:
 
     @staticmethod
     def setup(width, height, near=0.01, far=1000):
-        """Definr parametros para câmera de razão de aspecto, plano próximo e distante."""
+        """Define o tamanho da tela e os planos de corte próximo e distante."""
         GL.width = width
         GL.height = height
         GL.near = near
@@ -378,7 +379,7 @@ class GL:
         """Função usada para renderizar IndexedFaceSet."""
         # https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/geometry3D.html#IndexedFaceSet
         # A função indexedFaceSet é usada para desenhar malhas de triângulos. Ela funciona de
-        # forma muito simular a IndexedTriangleStripSet porém com mais recursos.
+        # forma muito similar a IndexedTriangleStripSet porém com mais recursos.
         # Você receberá as coordenadas dos pontos no parâmetro cord, esses
         # pontos são uma lista de pontos x, y, e z sempre na ordem. Assim coord[0] é o valor
         # da coordenada x do primeiro ponto, coord[1] o valor y do primeiro ponto, coord[2]
@@ -386,16 +387,16 @@ class GL:
         # segundo ponto e assim por diante. No IndexedFaceSet uma lista de vértices é informada
         # em coordIndex, o valor -1 indica que a lista acabou.
         # A ordem de conexão não possui uma ordem oficial, mas em geral se o primeiro ponto com os dois
-        # seguintes e depois este mesmo primeiro ponto com o terçeiro e quarto ponto. Por exemplo: numa
+        # seguintes e depois este mesmo primeiro ponto com o terceiro e quarto ponto. Por exemplo: numa
         # sequencia 0, 1, 2, 3, 4, -1 o primeiro triângulo será com os vértices 0, 1 e 2, depois serão
         # os vértices 0, 2 e 3, e depois 0, 3 e 4, e assim por diante, até chegar no final da lista.
         # Adicionalmente essa implementação do IndexedFace aceita cores por vértices, assim
         # se a flag colorPerVertex estiver habilitada, os vértices também possuirão cores
-        # que servem para definir a cor interna dos poligonos, para isso faça um cálculo
+        # que servem para definir a cor interna dos polígonos, para isso faça um cálculo
         # baricêntrico de que cor deverá ter aquela posição. Da mesma forma se pode definir uma
         # textura para o poligono, para isso, use as coordenadas de textura e depois aplique a
         # cor da textura conforme a posição do mapeamento. Dentro da classe GPU já está
-        # implementadado um método para a leitura de imagens.
+        # implementado um método para a leitura de imagens.
 
         # Os prints abaixo são só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
         print("IndexedFaceSet : ")
@@ -571,7 +572,7 @@ class GL:
         # Interpola não linearmente entre uma lista de vetores 3D. O campo keyValue possui
         # uma lista com os valores a serem interpolados, key possui uma lista respectiva de chaves
         # dos valores em keyValue, a fração a ser interpolada vem de set_fraction que varia de
-        # zeroa a um. O campo keyValue deve conter exatamente tantos vetores 3D quanto os
+        # zero a um. O campo keyValue deve conter exatamente tantos vetores 3D quanto os
         # quadros-chave no key. O campo closed especifica se o interpolador deve tratar a malha
         # como fechada, com uma transições da última chave para a primeira chave. Se os keyValues
         # na primeira e na última chave não forem idênticos, o campo closed será ignorado.
@@ -589,9 +590,9 @@ class GL:
 
     @staticmethod
     def orientationInterpolator(set_fraction, key, keyValue):
-        """Interpola entre uma lista de valores de rotação especificos."""
+        """Interpola entre uma lista de valores de rotação específicos."""
         # https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/interpolators.html#OrientationInterpolator
-        # Interpola rotações são absolutas no espaço do objeto e, portanto, não são cumulativas.
+        # As rotações interpoladas são absolutas no espaço do objeto e, portanto, não são cumulativas.
         # Uma orientação representa a posição final de um objeto após a aplicação de uma rotação.
         # Um OrientationInterpolator interpola entre duas orientações calculando o caminho mais
         # curto na esfera unitária entre as duas orientações. A interpolação é linear em
@@ -599,7 +600,7 @@ class GL:
         # orientações forem diagonalmente opostas. O campo keyValue possui uma lista com os
         # valores a serem interpolados, key possui uma lista respectiva de chaves
         # dos valores em keyValue, a fração a ser interpolada vem de set_fraction que varia de
-        # zeroa a um. O campo keyValue deve conter exatamente tantas rotações 3D quanto os
+        # zero a um. O campo keyValue deve conter exatamente tantas rotações 3D quanto os
         # quadros-chave no key.
 
         # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
