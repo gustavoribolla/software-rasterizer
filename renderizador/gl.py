@@ -25,6 +25,17 @@ class GL:
     near = 0.01   # plano de corte próximo
     far = 1000    # plano de corte distante
 
+    # Estado usado pelo pipeline 3D.
+    # A matriz de modelo começa como identidade e é empilhada ao entrar em Transforms.
+    model_matrix = np.identity(4)
+    model_stack = []
+
+    # Matriz que leva pontos do mundo para o sistema de coordenadas da câmera.
+    view_matrix = np.identity(4)
+
+    # Guardamos o campo de visão agora; ele será usado na tarefa de perspectiva.
+    field_of_view = math.pi / 4
+
     @staticmethod
     def setup(width, height, near=0.01, far=1000):
         """Define o tamanho da tela e os planos de corte próximo e distante."""
@@ -32,6 +43,41 @@ class GL:
         GL.height = height
         GL.near = near
         GL.far = far
+
+        # Reinicia o estado do pipeline 3D a cada nova renderização.
+        GL.model_matrix = np.identity(4)
+        GL.model_stack = []
+        GL.view_matrix = np.identity(4)
+        GL.field_of_view = math.pi / 4
+
+    @staticmethod
+    def _matriz_rotacao(rotation):
+        """Cria uma matriz 4x4 a partir da rotação eixo-ângulo do X3D."""
+        if not rotation or len(rotation) < 4:
+            return np.identity(4)
+
+        x, y, z, angulo = rotation[:4]
+
+        # O X3D informa uma rotação no formato eixo (x, y, z) + ângulo em radianos.
+        # Normalizamos o eixo antes de aplicar a fórmula de Rodrigues.
+        norma = math.sqrt(x * x + y * y + z * z)
+        if norma == 0 or angulo == 0:
+            return np.identity(4)
+
+        x /= norma
+        y /= norma
+        z /= norma
+
+        c = math.cos(angulo)
+        s = math.sin(angulo)
+        t = 1 - c
+
+        return np.array([
+            [t*x*x + c,     t*x*y - s*z,   t*x*z + s*y,   0.0],
+            [t*x*y + s*z,   t*y*y + c,     t*y*z - s*x,   0.0],
+            [t*x*z - s*y,   t*y*z + s*x,   t*z*z + c,     0.0],
+            [0.0,           0.0,           0.0,           1.0]
+        ], dtype=float)
 
     # ------------------------------------------------------------------
     # Rotinas auxiliares de rasterização (uso interno da biblioteca)
@@ -279,51 +325,88 @@ class GL:
 
     @staticmethod
     def viewpoint(position, orientation, fieldOfView):
-        """Função usada para renderizar (na verdade coletar os dados) de Viewpoint."""
-        # Na função de viewpoint você receberá a posição, orientação e campo de visão da
-        # câmera virtual. Use esses dados para poder calcular e criar a matriz de projeção
-        # perspectiva para poder aplicar nos pontos dos objetos geométricos.
+        """Monta a matriz de visualização a partir do Viewpoint do X3D."""
+        # A câmera possui uma transformação no mundo, mas para transformar o mundo
+        # para o espaço da câmera precisamos usar a transformação inversa.
+        #
+        # Se C = T * R representa a câmera no mundo, então:
+        # View = C^-1 = R^-1 * T^-1.
+        #
+        # Como R é uma matriz de rotação, R^-1 = R.T.
 
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("Viewpoint : ", end='')
-        print("position = {0} ".format(position), end='')
-        print("orientation = {0} ".format(orientation), end='')
-        print("fieldOfView = {0} ".format(fieldOfView))
+        if not position or len(position) < 3:
+            position = [0.0, 0.0, 10.0]
+
+        if not orientation or len(orientation) < 4:
+            orientation = [0.0, 0.0, 1.0, 0.0]
+
+        px, py, pz = position[:3]
+
+        # Inversa da translação da câmera.
+        translacao_inversa = np.identity(4)
+        translacao_inversa[0, 3] = -px
+        translacao_inversa[1, 3] = -py
+        translacao_inversa[2, 3] = -pz
+
+        # Inversa da rotação da câmera.
+        rotacao = GL._matriz_rotacao(orientation)
+        rotacao_inversa = rotacao.T
+
+        GL.view_matrix = rotacao_inversa @ translacao_inversa
+
+        # Ainda não fazemos a projeção nesta tarefa, mas guardamos o FOV para a tarefa 3.
+        GL.field_of_view = fieldOfView if fieldOfView is not None else math.pi / 4
 
     @staticmethod
     def transform_in(translation, scale, rotation):
-        """Função usada para renderizar (na verdade coletar os dados) de Transform."""
-        # A função transform_in será chamada quando se entrar em um nó X3D do tipo Transform
-        # do grafo de cena. Os valores passados são a escala em um vetor [x, y, z]
-        # indicando a escala em cada direção, a translação [x, y, z] nas respectivas
-        # coordenadas e finalmente a rotação por [x, y, z, t] sendo definida pela rotação
-        # do objeto ao redor do eixo x, y, z por t radianos, seguindo a regra da mão direita.
-        # ESSES NÃO SÃO OS VALORES DE QUATÉRNIOS AS CONTAS AINDA PRECISAM SER FEITAS.
-        # Quando se entrar em um nó transform se deverá salvar a matriz de transformação dos
-        # modelos do mundo para depois potencialmente usar em outras chamadas. 
-        # Quando começar a usar Transforms dentre de outros Transforms, mais a frente no curso
-        # Você precisará usar alguma estrutura de dados pilha para organizar as matrizes.
+        """Entra em um Transform e atualiza a matriz de modelo atual."""
+        # Valores padrão do nó Transform do X3D.
+        if not translation or len(translation) < 3:
+            translation = [0.0, 0.0, 0.0]
 
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("Transform : ", end='')
-        if translation:
-            print("translation = {0} ".format(translation), end='') # imprime no terminal
-        if scale:
-            print("scale = {0} ".format(scale), end='') # imprime no terminal
-        if rotation:
-            print("rotation = {0} ".format(rotation), end='') # imprime no terminal
-        print("")
+        if not scale or len(scale) < 3:
+            scale = [1.0, 1.0, 1.0]
+
+        if not rotation or len(rotation) < 4:
+            rotation = [0.0, 0.0, 1.0, 0.0]
+
+        tx, ty, tz = translation[:3]
+        sx, sy, sz = scale[:3]
+
+        # Matriz de translação.
+        matriz_translacao = np.identity(4)
+        matriz_translacao[0, 3] = tx
+        matriz_translacao[1, 3] = ty
+        matriz_translacao[2, 3] = tz
+
+        # Matriz de escala.
+        matriz_escala = np.identity(4)
+        matriz_escala[0, 0] = sx
+        matriz_escala[1, 1] = sy
+        matriz_escala[2, 2] = sz
+
+        # Matriz de rotação eixo-ângulo.
+        matriz_rotacao = GL._matriz_rotacao(rotation)
+
+        # No X3D, para este projeto, aplicamos escala, depois rotação e por último
+        # translação ao ponto. Com vetores-coluna isso resulta em T @ R @ S.
+        matriz_local = matriz_translacao @ matriz_rotacao @ matriz_escala
+
+        # Salva a transformação anterior para permitir Transforms aninhados.
+        GL.model_stack.append(GL.model_matrix.copy())
+
+        # Se houver um Transform dentro de outro, a matriz do filho é aplicada
+        # no sistema de coordenadas definido pelo pai.
+        GL.model_matrix = GL.model_matrix @ matriz_local
 
     @staticmethod
     def transform_out():
-        """Função usada para renderizar (na verdade coletar os dados) de Transform."""
-        # A função transform_out será chamada quando se sair em um nó X3D do tipo Transform do
-        # grafo de cena. Não são passados valores, porém quando se sai de um nó transform se
-        # deverá recuperar a matriz de transformação dos modelos do mundo da estrutura de
-        # pilha implementada.
-
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("Saindo de Transform")
+        """Sai de um Transform e recupera a matriz de modelo anterior."""
+        if GL.model_stack:
+            GL.model_matrix = GL.model_stack.pop()
+        else:
+            # Segurança para não deixar uma transformação antiga ativa.
+            GL.model_matrix = np.identity(4)
 
     @staticmethod
     def triangleStripSet(point, stripCount, colors):
