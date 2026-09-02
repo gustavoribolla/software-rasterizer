@@ -1,148 +1,146 @@
 # Renderizador
 
-Renderizador base utilizado na disciplina de **Computação Gráfica**.
+Renderizador por software desenvolvido para a disciplina de **Computação Gráfica**.
 
-Neste projeto foram implementadas rotinas de rasterização 2D para pontos, linhas, círculos e triângulos.
+O projeto implementa a rasterização de primitivas gráficas a partir de arquivos X3D, incluindo desenho de elementos 2D e processamento de objetos 3D por meio de transformações de modelo, câmera e projeção perspectiva.
 
 ## Pré-requisitos
 
-É necessário ter o **Python 3** instalado.
-
-Na raiz do projeto, instale as dependências com:
+Instale as dependências do projeto com:
 
 ```sh
-python -m pip install -r requirements.txt
+pip3 install -r requirements.txt
 ```
 
-No Linux ou macOS, caso o comando `python` não esteja disponível, use:
+## Uso
+
+Para executar o renderizador:
 
 ```sh
-python3 -m pip install -r requirements.txt
+python3 renderizador.py
 ```
 
-## Como executar
-
-> Os comandos abaixo devem ser executados na **raiz do projeto**, onde estão `exemplos.py`, `requirements.txt` e a pasta `renderizador`.
-
-A forma mais simples de testar o projeto é executar um dos exemplos disponíveis:
+Também é possível executar os exemplos disponíveis no projeto:
 
 ```sh
-python exemplos.py 0
-```
-
-No Linux ou macOS:
-
-```sh
-python3 exemplos.py 0
-```
-
-O número `0` corresponde ao primeiro exemplo. Também é possível informar o nome do exemplo:
-
-```sh
-python exemplos.py aleatorios
-```
-
-Ao executar apenas:
-
-```sh
-python exemplos.py
-```
-
-o programa mostra a lista de exemplos e solicita qual deles deve ser aberto.
-
-## Executar o renderizador diretamente
-
-O arquivo principal do renderizador está dentro da pasta `renderizador`. Por isso, a partir da raiz do projeto, utilize:
-
-```sh
-python renderizador/renderizador.py -i <arquivo.x3d>
-```
-
-Por exemplo:
-
-```sh
-python renderizador/renderizador.py -i docs/exemplos/2D/pontos/aleatorios/aleatorios.x3d -w 30 -h 20
+python3 exemplos.py
 ```
 
 ### Opções
 
 * `-i`, `--input`: arquivo X3D de entrada
-* `-o`, `--output`: arquivo de imagem de saída
+* `-o`, `--output`: arquivo de saída (imagem)
 * `-w`, `--width`: resolução horizontal
 * `-h`, `--height`: resolução vertical
-* `-g`, `--graph`: imprime o grafo de cena
-* `-p`, `--pause`: inicia a simulação em pausa
-* `-q`, `--quiet`: não exibe a janela de visualização
+* `-q`, `--quiet`: executa sem exibir a janela
 
-## Exemplos 2D
+## Funcionalidades
 
-Os exemplos relacionados a esta etapa do projeto são:
+O renderizador possui suporte para rasterização de primitivas 2D e processamento de objetos em cenas 3D.
 
-0. `aleatorios` — pontos
-1. `linhas_cores` — linhas coloridas
-2. `octogono` — polilinha formando um octógono
-3. `linhas_cruzes` — linhas que testam os limites da tela
-4. `varias_linhas` — vários segmentos de linha
-5. `circulo` — círculo 2D
-6. `triangulos` — triângulos 2D
-7. `helice` — composição de triângulos
-8. `pontas` — triângulos grandes e clipping
+| Função               | Descrição                                                                                                                  |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `GL.polypoint2D()`   | Desenha pontos no framebuffer utilizando suas posições e cores.                                                            |
+| `GL.polyline2D()`    | Rasteriza segmentos de reta entre os vértices recebidos, interpolando as cores ao longo da linha.                          |
+| `GL.circle2D()`      | Rasteriza círculos 2D no framebuffer.                                                                                      |
+| `GL.triangleSet2D()` | Rasteriza e preenche triângulos 2D, realizando a interpolação das cores dos vértices.                                      |
+| `GL.triangleSet()`   | Processa e rasteriza triângulos em uma cena 3D, aplicando as transformações necessárias até chegar às coordenadas da tela. |
+| `GL.viewpoint()`     | Configura a câmera da cena utilizando sua posição, orientação e campo de visão (`fieldOfView`).                            |
+| `GL.transform_in()`  | Aplica as transformações de escala, rotação e translação aos objetos da cena através de matrizes homogêneas.               |
+| `GL.transform_out()` | Finaliza o escopo de uma transformação e recupera a transformação anterior.                                                |
 
-Para executar outro exemplo, basta trocar o índice. Por exemplo:
+## Pipeline 3D
 
-```sh
-python exemplos.py 6
-```
+Para renderizar objetos 3D, os vértices passam por uma sequência de transformações até chegarem aos pixels da imagem.
 
-## Visualização dos exemplos
+### Transformação de modelo
 
-Os exemplos também podem ser consultados na web:
+Posiciona cada objeto no espaço do mundo.
 
-[Exemplos do Renderizador](https://lpsoares.github.io/Renderizador/)
+São consideradas as transformações definidas pelo nó `Transform`:
 
-Para visualizar os arquivos da pasta `docs` localmente em um navegador, execute na raiz do projeto:
+* escala;
+* rotação;
+* translação.
 
-```sh
-python -m http.server
-```
+Essas operações são combinadas utilizando matrizes homogêneas 4×4.
 
-Depois, acesse o endereço mostrado no terminal.
+### Transformação de câmera
 
-## Problemas comuns
+Os vértices do mundo são convertidos para o sistema de coordenadas da câmera.
 
-### `python` não é reconhecido
+O nó `Viewpoint` fornece:
 
-No Windows, tente utilizar `py` no lugar de `python`:
+* posição da câmera;
+* orientação da câmera;
+* campo de visão.
 
-```sh
-py -m pip install -r requirements.txt
-py exemplos.py 0
-```
+A matriz de visualização corresponde à transformação inversa da câmera.
 
-### `No such file or directory` / arquivo não encontrado
+### Projeção perspectiva
 
-Confirme que o terminal está aberto na raiz do repositório. Nessa pasta devem aparecer, entre outros:
+Depois da transformação para o espaço da câmera, é aplicada a projeção perspectiva.
+
+Essa etapa utiliza o `fieldOfView` da câmera e faz com que objetos mais distantes apareçam menores na imagem.
+
+Após a projeção, é realizada a divisão pelas coordenadas homogêneas para obter as coordenadas normalizadas do dispositivo (NDC).
+
+### Coordenadas da tela
+
+As coordenadas normalizadas são convertidas para posições de pixels de acordo com a resolução do framebuffer.
+
+Depois dessa conversão, os triângulos são enviados para a rotina de rasterização 2D e desenhados na imagem final.
+
+O pipeline utilizado pode ser resumido como:
 
 ```text
-README.md
-requirements.txt
-exemplos.py
-renderizador/
-docs/
+Vértices do objeto
+        ↓
+Transformação de modelo
+        ↓
+Transformação de câmera
+        ↓
+Projeção perspectiva
+        ↓
+Coordenadas normalizadas (NDC)
+        ↓
+Coordenadas da tela
+        ↓
+Rasterização
+        ↓
+Framebuffer
 ```
 
-### Erro de módulo não encontrado
+## Exemplos
 
-Instale novamente as dependências:
+Os exemplos podem ser executados através de:
 
 ```sh
-python -m pip install -r requirements.txt
+python3 exemplos.py <nome_do_exemplo>
 ```
 
-### A janela não abre
-
-Primeiro teste um exemplo simples:
+Alguns exemplos para testar as funcionalidades 2D:
 
 ```sh
-python exemplos.py 0
+python3 exemplos.py aleatorios
+python3 exemplos.py linhas_cores
+python3 exemplos.py octogono
+python3 exemplos.py circulo
+python3 exemplos.py triangulos
 ```
+
+Para testar as funcionalidades 3D:
+
+```sh
+python3 exemplos.py um_triangulo
+python3 exemplos.py varios_triangs
+python3 exemplos.py zoom
+```
+
+Os exemplos `um_triangulo`, `varios_triangs` e `zoom` permitem verificar principalmente o funcionamento das transformações de modelo, câmera, projeção perspectiva e conversão para coordenadas da tela.
+
+## Estrutura
+
+A implementação principal das operações gráficas está concentrada na classe `GL`, responsável pelas rotinas de rasterização e pelas transformações utilizadas durante a renderização.
+
+O projeto utiliza um framebuffer para armazenar os pixels gerados pelo rasterizador antes da apresentação ou salvamento da imagem final.
