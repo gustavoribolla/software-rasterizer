@@ -316,12 +316,54 @@ class GL:
         # (emissiveColor), conforme implementar novos materias você deverá suportar outros
         # tipos de cores.
 
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("TriangleSet : pontos = {0}".format(point)) # imprime no terminal pontos
-        print("TriangleSet : colors = {0}".format(colors)) # imprime no terminal as cores
+        rgb = GL._rgb8(colors)
 
-        # Exemplo de desenho de um pixel branco na coordenada 10, 10
-        gpu.GPU.draw_pixel([10, 10], gpu.GPU.RGB8, [255, 255, 255])  # altera pixel
+        # Matriz de projeção perspectiva. O fieldOfView do X3D corresponde ao
+        # campo de visão vertical; a razão de aspecto corrige a coordenada x.
+        aspecto = GL.width / GL.height
+        f = 1.0 / math.tan(GL.field_of_view / 2.0)
+
+        projecao = np.array([
+            [f / aspecto, 0.0, 0.0, 0.0],
+            [0.0, f, 0.0, 0.0],
+            [0.0, 0.0, -(GL.far + GL.near) / (GL.far - GL.near),
+             -(2.0 * GL.far * GL.near) / (GL.far - GL.near)],
+            [0.0, 0.0, -1.0, 0.0]
+        ], dtype=float)
+
+        # Percorre os vértices de três em três. Cada ponto passa por todas as
+        # etapas do pipeline: modelo -> câmera -> projeção -> NDC -> tela.
+        for i in range(0, len(point) - 8, 9):
+            vertices_tela = []
+            triangulo_valido = True
+
+            for j in range(3):
+                k = i + j * 3
+                vertice = np.array([point[k], point[k + 1], point[k + 2], 1.0],
+                                    dtype=float)
+
+                mundo = GL.model_matrix @ vertice
+                camera = GL.view_matrix @ mundo
+                clip = projecao @ camera
+
+                # w <= 0 indica um ponto sobre/atrás da câmera. Para esta etapa do
+                # projeto descartamos o triângulo em vez de fazer clipping 3D.
+                if clip[3] <= 0:
+                    triangulo_valido = False
+                    break
+
+                ndc = clip[:3] / clip[3]
+
+                # Coordenadas normalizadas [-1, 1] para pixels. O eixo y é invertido
+                # porque o framebuffer começa no canto superior esquerdo.
+                x_tela = (ndc[0] + 1.0) * GL.width / 2.0
+                y_tela = (1.0 - ndc[1]) * GL.height / 2.0
+                vertices_tela.append((x_tela, y_tela))
+
+            if triangulo_valido:
+                GL._triangulo(vertices_tela[0][0], vertices_tela[0][1],
+                              vertices_tela[1][0], vertices_tela[1][1],
+                              vertices_tela[2][0], vertices_tela[2][1], rgb)
 
     @staticmethod
     def viewpoint(position, orientation, fieldOfView):
