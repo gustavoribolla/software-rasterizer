@@ -33,7 +33,7 @@ class GL:
     # Matriz que leva pontos do mundo para o sistema de coordenadas da câmera.
     view_matrix = np.identity(4)
 
-    # Guardamos o campo de visão agora; ele será usado na tarefa de perspectiva.
+    # Campo de visão vertical usado na projeção perspectiva.
     field_of_view = math.pi / 4
 
     @staticmethod
@@ -396,7 +396,7 @@ class GL:
 
         GL.view_matrix = rotacao_inversa @ translacao_inversa
 
-        # Ainda não fazemos a projeção nesta tarefa, mas guardamos o FOV para a tarefa 3.
+        # Guarda o FOV para a matriz de projeção usada em triangleSet().
         GL.field_of_view = fieldOfView if fieldOfView is not None else math.pi / 4
 
     @staticmethod
@@ -434,20 +434,25 @@ class GL:
         # translação ao ponto. Com vetores-coluna isso resulta em T @ R @ S.
         matriz_local = matriz_translacao @ matriz_rotacao @ matriz_escala
 
-        # Salva a transformação anterior para permitir Transforms aninhados.
+        # Projeto 1.3: o grafo de cena pode ter Transform dentro de Transform.
+        # Guardamos a matriz do pai antes de entrar no filho.
         GL.model_stack.append(GL.model_matrix.copy())
 
-        # Se houver um Transform dentro de outro, a matriz do filho é aplicada
-        # no sistema de coordenadas definido pelo pai.
+        # A transformação local é composta com a transformação acumulada do pai.
+        # Assim, todos os descendentes usam corretamente o sistema de coordenadas
+        # definido pelos Transforms acima deles no grafo de cena.
         GL.model_matrix = GL.model_matrix @ matriz_local
 
     @staticmethod
     def transform_out():
-        """Sai de um Transform e recupera a matriz de modelo anterior."""
+        """Sai de um Transform e recupera a matriz do nó pai no grafo de cena."""
         if GL.model_stack:
+            # Ao terminar os filhos do Transform atual, voltamos exatamente ao
+            # sistema de coordenadas que estava ativo antes de entrar nesse nó.
             GL.model_matrix = GL.model_stack.pop()
         else:
-            # Segurança para não deixar uma transformação antiga ativa.
+            # Segurança para não deixar uma transformação antiga ativa caso a
+            # função seja chamada sem um Transform correspondente na pilha.
             GL.model_matrix = np.identity(4)
 
     @staticmethod
