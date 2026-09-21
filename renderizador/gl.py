@@ -8,7 +8,7 @@ Biblioteca Gráfica / Graphics Library.
 
 Desenvolvido por: Gustavo Colombi Ribolla e Luigi Orlandi Quinze
 Disciplina: Computação Gráfica
-Data: 13/09/2026
+Data: 21/09/2026
 """
 
 import time         # Para operações com tempo
@@ -36,6 +36,12 @@ class GL:
     # Campo de visão vertical usado na projeção perspectiva.
     field_of_view = math.pi / 4
 
+    # Projeto 1.4: supersampling 2x2. Cada pixel final mantém quatro amostras
+    # internas; a cor exibida é a média delas. O buffer é reiniciado a cada
+    # passagem pelo Viewpoint, que ocorre no início de cada frame.
+    supersampling = 2
+    _ssaa_buffer = None
+
     @staticmethod
     def setup(width, height, near=0.01, far=1000):
         """Define o tamanho da tela e os planos de corte próximo e distante."""
@@ -49,6 +55,7 @@ class GL:
         GL.model_stack = []
         GL.view_matrix = np.identity(4)
         GL.field_of_view = math.pi / 4
+        GL._ssaa_buffer = None
 
     @staticmethod
     def _matriz_rotacao(rotation):
@@ -98,6 +105,13 @@ class GL:
         """Pinta o pixel (x, y), ignorando o que estiver fora da tela (clipping)."""
         if 0 <= x < GL.width and 0 <= y < GL.height:
             gpu.GPU.draw_pixel([x, y], gpu.GPU.RGB8, rgb)
+
+            # Primitivas que não passam por _triangulo() continuam compatíveis
+            # com o buffer de supersampling: tratamos o pixel como totalmente
+            # coberto pelas quatro amostras.
+            if (GL._ssaa_buffer is not None and
+                    GL._ssaa_buffer.shape[:2] == (GL.height, GL.width)):
+                GL._ssaa_buffer[y, x, :, :] = np.array(rgb[:3], dtype=np.uint8)
 
     @staticmethod
     def _faixa_visivel(x0, y0, dx, dy):
@@ -165,52 +179,129 @@ class GL:
             GL._pixel(math.floor(x0 + i * inc_x), math.floor(y0 + i * inc_y), rgb)
 
     @staticmethod
-    def _triangulo(x0, y0, x1, y1, x2, y2, rgb):
-        """Preenche um triângulo testando o centro de cada pixel da caixa envolvente."""
-        # Dobro da área com sinal: diz se os vértices estão em sentido horário ou não
+    def _reiniciar_supersampling():
+        """Recria as quatro amostras internas de cada pixel para um novo frame."""
+        # O Renderizador limpa o framebuffer antes de percorrer a cena. Usamos a
+        # mesma cor de limpeza como valor inicial de cada uma das quatro amostras.
+        fundo = getattr(gpu.GPU, "clear_color_val", [0, 0, 0])
+        fundo = np.array(fundo[:3], dtype=np.uint8)
+
+        GL._ssaa_buffer = np.empty(
+            (GL.height, GL.width, GL.supersampling, GL.supersampling, 3),
+            dtype=np.uint8
+        )
+        GL._ssaa_buffer[:] = fundo
+
+    @staticmethod
+    def _triangulo(x0, y0, x1, y1, x2, y2, rgb,
+                   cores_vertices=None, inv_w=None):
+        """Rasteriza um triângulo com supersampling 2x2 e cores interpoladas."""
+        # Dobro da área com sinal. Também será o denominador das coordenadas
+        # baricêntricas usadas para interpolar atributos dentro do triângulo.
         area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)
         if area == 0:
-            return  # triângulo degenerado (sem área), nada para desenhar
-        if area < 0:
-            x1, y1, x2, y2 = x2, y2, x1, y1  # normaliza a orientação dos vértices
+            return
 
-        # Caixa envolvente (bounding box) já recortada aos limites da tela, assim
-        # triângulos que saem da tela não geram laços desnecessários.
+        # Mantém a orientação anti-horária para a regra top-left. Se os vértices
+        # forem trocados, os atributos associados a eles também precisam ser.
+        if area < 0:
+            x1, y1, x2, y2 = x2, y2, x1, y1
+            area = -area
+            if cores_vertices is not None:
+                cores_vertices = [cores_vertices[0], cores_vertices[2],
+                                   cores_vertices[1]]
+            if inv_w is not None:
+                inv_w = [inv_w[0], inv_w[2], inv_w[1]]
+
+        # O buffer de supersampling é criado de forma preguiçosa. O Viewpoint o
+        # reinicia no começo de cada frame, então triângulos vizinhos compartilham
+        # corretamente suas quatro amostras sem criar costuras nas bordas.
+        if GL._ssaa_buffer is None or GL._ssaa_buffer.shape[:2] != (GL.height, GL.width):
+            GL._reiniciar_supersampling()
+
         min_x = max(0, math.floor(min(x0, x1, x2)))
         max_x = min(GL.width - 1, math.ceil(max(x0, x1, x2)))
         min_y = max(0, math.floor(min(y0, y1, y2)))
         max_y = min(GL.height - 1, math.ceil(max(y0, y1, y2)))
 
-        # Vetores das três arestas, percorridas sempre no mesmo sentido
+        # Arestas percorridas sempre no mesmo sentido.
         ax0, ay0 = x1 - x0, y1 - y0
         ax1, ay1 = x2 - x1, y2 - y1
         ax2, ay2 = x0 - x2, y0 - y2
 
-        # Regra "top-left": um pixel que cai exatamente sobre uma aresta só pertence
-        # ao triângulo se ela for a aresta de cima ou a da esquerda. Isso evita que
-        # dois triângulos vizinhos desenhem o mesmo pixel duas vezes.
+        # Regra top-left: amostras exatamente sobre uma aresta pertencem a apenas
+        # um dos triângulos que compartilham essa aresta.
         b0 = ay0 < 0 or (ay0 == 0 and ax0 > 0)
         b1 = ay1 < 0 or (ay1 == 0 and ax1 > 0)
         b2 = ay2 < 0 or (ay2 == 0 and ax2 > 0)
 
+        # Posições regulares das quatro amostras de um supersampling 2x2.
+        offsets = (0.25, 0.75)
+        cor_constante = np.array(rgb, dtype=float)
+        cores = None
+        if cores_vertices is not None and len(cores_vertices) == 3:
+            cores = [np.array(c, dtype=float) for c in cores_vertices]
+
         for py in range(min_y, max_y + 1):
-            cy = py + 0.5  # centro do pixel na vertical
             for px in range(min_x, max_x + 1):
-                cx = px + 0.5  # centro do pixel na horizontal
+                alterou_pixel = False
 
-                # Função de aresta (produto vetorial 2D) para cada lado do triângulo:
-                # o ponto está dentro quando fica do lado de dentro das três arestas.
-                e0 = ax0 * (cy - y0) - ay0 * (cx - x0)
-                if e0 < 0 or (e0 == 0 and not b0):
-                    continue
-                e1 = ax1 * (cy - y1) - ay1 * (cx - x1)
-                if e1 < 0 or (e1 == 0 and not b1):
-                    continue
-                e2 = ax2 * (cy - y2) - ay2 * (cx - x2)
-                if e2 < 0 or (e2 == 0 and not b2):
-                    continue
+                for sy, oy in enumerate(offsets):
+                    cy = py + oy
+                    for sx, ox in enumerate(offsets):
+                        cx = px + ox
 
-                GL._pixel(px, py, rgb)
+                        e0 = ax0 * (cy - y0) - ay0 * (cx - x0)
+                        if e0 < -1e-12 or (abs(e0) < 1e-12 and not b0):
+                            continue
+                        e1 = ax1 * (cy - y1) - ay1 * (cx - x1)
+                        if e1 < -1e-12 or (abs(e1) < 1e-12 and not b1):
+                            continue
+                        e2 = ax2 * (cy - y2) - ay2 * (cx - x2)
+                        if e2 < -1e-12 or (abs(e2) < 1e-12 and not b2):
+                            continue
+
+                        # e1, e2 e e0 correspondem, respectivamente, aos pesos
+                        # baricêntricos dos vértices 0, 1 e 2.
+                        l0 = e1 / area
+                        l1 = e2 / area
+                        l2 = e0 / area
+
+                        cor_amostra = cor_constante
+                        if cores is not None:
+                            # Interpolação afim seria simplesmente
+                            # l0*c0 + l1*c1 + l2*c2. Quando inv_w está disponível
+                            # fazemos a correção de perspectiva, interpolando c/w e
+                            # 1/w e dividindo os resultados no final.
+                            if inv_w is not None and len(inv_w) == 3:
+                                denominador = (l0 * inv_w[0] + l1 * inv_w[1] +
+                                               l2 * inv_w[2])
+                                if abs(denominador) > 1e-12:
+                                    cor_amostra = (
+                                        l0 * cores[0] * inv_w[0] +
+                                        l1 * cores[1] * inv_w[1] +
+                                        l2 * cores[2] * inv_w[2]
+                                    ) / denominador
+                                else:
+                                    cor_amostra = (l0 * cores[0] + l1 * cores[1] +
+                                                   l2 * cores[2])
+                            else:
+                                cor_amostra = (l0 * cores[0] + l1 * cores[1] +
+                                               l2 * cores[2])
+
+                        GL._ssaa_buffer[py, px, sy, sx] = np.clip(
+                            np.rint(cor_amostra), 0, 255
+                        ).astype(np.uint8)
+                        alterou_pixel = True
+
+                if alterou_pixel:
+                    # Resolve as quatro amostras para o pixel final. Isso equivale
+                    # ao downsampling do framebuffer 2x maior, mas sem exigir
+                    # alterações no Renderizador ou na GPU simulada.
+                    resolvida = np.rint(
+                        GL._ssaa_buffer[py, px].astype(float).mean(axis=(0, 1))
+                    ).astype(int).tolist()
+                    gpu.GPU.draw_pixel([px, py], gpu.GPU.RGB8, resolvida)
 
     # ------------------------------------------------------------------
     # Nós de geometria 2D do X3D
@@ -300,26 +391,13 @@ class GL:
                           vertices[i + 4], vertices[i + 5], rgb)
 
     @staticmethod
-    def triangleSet(point, colors):
-        """Função usada para renderizar TriangleSet."""
-        # https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/rendering.html#TriangleSet
-        # Nessa função você receberá pontos no parâmetro point, esses pontos são uma lista
-        # de pontos x, y, e z sempre na ordem. Assim point[0] é o valor da coordenada x do
-        # primeiro ponto, point[1] o valor y do primeiro ponto, point[2] o valor z da
-        # coordenada z do primeiro ponto. Já point[3] é a coordenada x do segundo ponto e
-        # assim por diante.
-        # No TriangleSet os triângulos são informados individualmente, assim os três
-        # primeiros pontos definem um triângulo, os três próximos pontos definem um novo
-        # triângulo, e assim por diante.
-        # O parâmetro colors é um dicionário com os tipos cores possíveis, você pode assumir
-        # inicialmente, para o TriangleSet, o desenho das linhas com a cor emissiva
-        # (emissiveColor), conforme implementar novos materias você deverá suportar outros
-        # tipos de cores.
-
+    def triangleSet(point, colors, vertex_colors=None):
+        """Renderiza TriangleSet e permite interpolação de cores por vértice."""
+        # O parâmetro vertex_colors é opcional e foi acrescentado no Projeto 1.4.
+        # Quando ausente, o comportamento continua igual ao das etapas anteriores:
+        # o triângulo usa a cor emissiva do Material.
         rgb = GL._rgb8(colors)
 
-        # Matriz de projeção perspectiva. O fieldOfView do X3D corresponde ao
-        # campo de visão vertical; a razão de aspecto corrige a coordenada x.
         aspecto = GL.width / GL.height
         f = 1.0 / math.tan(GL.field_of_view / 2.0)
 
@@ -331,10 +409,9 @@ class GL:
             [0.0, 0.0, -1.0, 0.0]
         ], dtype=float)
 
-        # Percorre os vértices de três em três. Cada ponto passa por todas as
-        # etapas do pipeline: modelo -> câmera -> projeção -> NDC -> tela.
         for i in range(0, len(point) - 8, 9):
             vertices_tela = []
+            inversos_w = []
             triangulo_valido = True
 
             for j in range(3):
@@ -346,24 +423,38 @@ class GL:
                 camera = GL.view_matrix @ mundo
                 clip = projecao @ camera
 
-                # w <= 0 indica um ponto sobre/atrás da câmera. Para esta etapa do
-                # projeto descartamos o triângulo em vez de fazer clipping 3D.
+                # Nesta etapa ainda não há clipping 3D contra o plano near.
                 if clip[3] <= 0:
                     triangulo_valido = False
                     break
 
+                inversos_w.append(1.0 / clip[3])
                 ndc = clip[:3] / clip[3]
 
-                # Coordenadas normalizadas [-1, 1] para pixels. O eixo y é invertido
-                # porque o framebuffer começa no canto superior esquerdo.
                 x_tela = (ndc[0] + 1.0) * GL.width / 2.0
                 y_tela = (1.0 - ndc[1]) * GL.height / 2.0
                 vertices_tela.append((x_tela, y_tela))
 
-            if triangulo_valido:
-                GL._triangulo(vertices_tela[0][0], vertices_tela[0][1],
-                              vertices_tela[1][0], vertices_tela[1][1],
-                              vertices_tela[2][0], vertices_tela[2][1], rgb)
+            if not triangulo_valido:
+                continue
+
+            cores_triangulo = None
+            primeiro_vertice = i // 3
+            if (vertex_colors is not None and
+                    len(vertex_colors) >= (primeiro_vertice + 3) * 3):
+                cores_triangulo = []
+                for j in range(3):
+                    c = (primeiro_vertice + j) * 3
+                    cores_triangulo.append([
+                        min(255, max(0, round(vertex_colors[c] * 255))),
+                        min(255, max(0, round(vertex_colors[c + 1] * 255))),
+                        min(255, max(0, round(vertex_colors[c + 2] * 255)))
+                    ])
+
+            GL._triangulo(vertices_tela[0][0], vertices_tela[0][1],
+                          vertices_tela[1][0], vertices_tela[1][1],
+                          vertices_tela[2][0], vertices_tela[2][1], rgb,
+                          cores_vertices=cores_triangulo, inv_w=inversos_w)
 
     @staticmethod
     def viewpoint(position, orientation, fieldOfView):
@@ -395,6 +486,10 @@ class GL:
         rotacao_inversa = rotacao.T
 
         GL.view_matrix = rotacao_inversa @ translacao_inversa
+
+        # O Viewpoint é processado no início de cada frame. Aproveitamos esse
+        # ponto para limpar as quatro amostras internas do supersampling.
+        GL._reiniciar_supersampling()
 
         # Guarda o FOV para a matriz de projeção usada em triangleSet().
         GL.field_of_view = fieldOfView if fieldOfView is not None else math.pi / 4
@@ -538,24 +633,70 @@ class GL:
     @staticmethod
     def indexedFaceSet(coord, coordIndex, colorPerVertex, color, colorIndex,
                        texCoord, texCoordIndex, colors, current_texture):
-        """Renderiza faces indexadas, triangulando cada polígono em leque."""
-        # Nesta etapa do projeto tratamos a geometria e usamos a cor do Material.
-        # Cores por vértice e texturas ficam para as próximas partes do rasterizador.
+        """Renderiza faces indexadas e interpola cores definidas nos vértices."""
         if not coord or not coordIndex:
             return
 
-        triangulos = []
-        face = []
         total_vertices = len(coord) // 3
+        total_cores = len(color) // 3 if color else 0
 
-        def adicionar_face(indices_face):
-            """Triangula um polígono: (v0,v1,v2), (v0,v2,v3), ..."""
-            if len(indices_face) < 3:
-                return
+        # Separa uma lista indexada por -1 em faces. Essa mesma rotina serve
+        # tanto para coordIndex quanto para colorIndex.
+        def separar_faces(indices):
+            faces = []
+            atual = []
+            for indice in indices or []:
+                if indice == -1:
+                    if atual:
+                        faces.append(atual)
+                    atual = []
+                else:
+                    atual.append(indice)
+            if atual:
+                faces.append(atual)
+            return faces
 
-            v0 = indices_face[0]
-            for i in range(1, len(indices_face) - 1):
-                indices_triangulo = (v0, indices_face[i], indices_face[i + 1])
+        faces_coord = separar_faces(coordIndex)
+        faces_cor = separar_faces(colorIndex) if colorIndex else []
+
+        triangulos = []
+        cores_triangulos = []
+        tem_cores_vertices = bool(color)
+
+        for numero_face, face in enumerate(faces_coord):
+            if len(face) < 3:
+                continue
+
+            # Define como cada posição da face encontra sua cor.
+            indices_cor_face = None
+            cor_face = None
+
+            if tem_cores_vertices and colorPerVertex:
+                if numero_face < len(faces_cor):
+                    indices_cor_face = faces_cor[numero_face]
+                else:
+                    # Pelo X3D, colorIndex vazio significa usar os próprios
+                    # índices das coordenadas para buscar as cores.
+                    indices_cor_face = face
+            elif tem_cores_vertices:
+                # colorPerVertex=false: uma única cor vale para a face inteira.
+                # Quando colorIndex está vazio, a ordem das faces escolhe a cor.
+                if colorIndex:
+                    indices_planos = [i for i in colorIndex if i != -1]
+                    indice_cor = (indices_planos[numero_face]
+                                  if numero_face < len(indices_planos)
+                                  else numero_face)
+                else:
+                    indice_cor = numero_face
+
+                if 0 <= indice_cor < total_cores:
+                    base_cor = indice_cor * 3
+                    cor_face = color[base_cor:base_cor + 3]
+
+            # Triangulação em leque: (v0,v1,v2), (v0,v2,v3), ...
+            for i in range(1, len(face) - 1):
+                posicoes = (0, i, i + 1)
+                indices_triangulo = tuple(face[p] for p in posicoes)
 
                 if not all(0 <= indice < total_vertices
                            for indice in indices_triangulo):
@@ -565,19 +706,36 @@ class GL:
                     base = indice * 3
                     triangulos.extend(coord[base:base + 3])
 
-        # Cada -1 encerra uma face do IndexedFaceSet.
-        for indice in coordIndex:
-            if indice == -1:
-                adicionar_face(face)
-                face = []
-            else:
-                face.append(indice)
+                if tem_cores_vertices:
+                    if colorPerVertex:
+                        cores_validas = True
+                        cores_temp = []
+                        for posicao in posicoes:
+                            if (indices_cor_face is None or
+                                    posicao >= len(indices_cor_face)):
+                                cores_validas = False
+                                break
+                            indice_cor = indices_cor_face[posicao]
+                            if not 0 <= indice_cor < total_cores:
+                                cores_validas = False
+                                break
+                            base_cor = indice_cor * 3
+                            cores_temp.extend(color[base_cor:base_cor + 3])
 
-        # Também aceita uma face final sem -1.
-        adicionar_face(face)
+                        if cores_validas:
+                            cores_triangulos.extend(cores_temp)
+                        else:
+                            # Mantém o alinhamento com os vértices já adicionados.
+                            cores_triangulos.extend([0.0] * 9)
+                    else:
+                        if cor_face is not None:
+                            cores_triangulos.extend(cor_face * 3)
+                        else:
+                            cores_triangulos.extend([0.0] * 9)
 
         if triangulos:
-            GL.triangleSet(triangulos, colors)
+            vertex_colors = cores_triangulos if tem_cores_vertices else None
+            GL.triangleSet(triangulos, colors, vertex_colors=vertex_colors)
 
     @staticmethod
     def box(size, colors):
