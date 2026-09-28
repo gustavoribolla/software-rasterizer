@@ -8,7 +8,7 @@ Biblioteca Gráfica / Graphics Library.
 
 Desenvolvido por: Gustavo Colombi Ribolla e Luigi Orlandi Quinze
 Disciplina: Computação Gráfica
-Data: 21/09/2026
+Data: 28/09/2026
 """
 
 import time         # Para operações com tempo
@@ -42,6 +42,14 @@ class GL:
     supersampling = 2
     _ssaa_buffer = None
 
+    # Z-buffer por subamostra. Como o anti-aliasing usa quatro amostras por pixel,
+    # a visibilidade também precisa ser decidida para cada uma delas separadamente.
+    _ssaa_depth_buffer = None
+
+    # Cache das texturas e de suas pirâmides de mipmap. Evita reler o mesmo arquivo
+    # e recalcular todos os níveis a cada triângulo/frame.
+    _texture_cache = {}
+
     @staticmethod
     def setup(width, height, near=0.01, far=1000):
         """Define o tamanho da tela e os planos de corte próximo e distante."""
@@ -56,6 +64,8 @@ class GL:
         GL.view_matrix = np.identity(4)
         GL.field_of_view = math.pi / 4
         GL._ssaa_buffer = None
+        GL._ssaa_depth_buffer = None
+        GL._texture_cache = {}
 
     @staticmethod
     def _matriz_rotacao(rotation):
@@ -179,8 +189,13 @@ class GL:
             GL._pixel(math.floor(x0 + i * inc_x), math.floor(y0 + i * inc_y), rgb)
 
     @staticmethod
+    def begin_frame():
+        """Reinicia os buffers internos usados em um novo frame."""
+        GL._reiniciar_supersampling()
+
+    @staticmethod
     def _reiniciar_supersampling():
-        """Recria as quatro amostras internas de cada pixel para um novo frame."""
+        """Recria os buffers de cor e profundidade das quatro subamostras."""
         # O Renderizador limpa o framebuffer antes de percorrer a cena. Usamos a
         # mesma cor de limpeza como valor inicial de cada uma das quatro amostras.
         fundo = getattr(gpu.GPU, "clear_color_val", [0, 0, 0])
@@ -192,18 +207,192 @@ class GL:
         )
         GL._ssaa_buffer[:] = fundo
 
+        # O X3D/projeto usa NDC: -1 é o plano próximo e +1 o plano distante.
+        # Portanto 1.0 representa o fundo (profundidade máxima) ao limpar o frame.
+        GL._ssaa_depth_buffer = np.ones(
+            (GL.height, GL.width, GL.supersampling, GL.supersampling),
+            dtype=np.float32
+        )
+
     @staticmethod
-    def _triangulo(x0, y0, x1, y1, x2, y2, rgb,
-                   cores_vertices=None, inv_w=None):
-        """Rasteriza um triângulo com supersampling 2x2 e cores interpoladas."""
-        # Dobro da área com sinal. Também será o denominador das coordenadas
-        # baricêntricas usadas para interpolar atributos dentro do triângulo.
-        area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)
-        if area == 0:
+    def _perspective_interp(pesos, valores, inv_w):
+        """Interpola um atributo usando correção de perspectiva (atributo/w)."""
+        valores = [np.asarray(v, dtype=float) for v in valores]
+        if inv_w is None or len(inv_w) != 3:
+            return (pesos[0] * valores[0] +
+                    pesos[1] * valores[1] +
+                    pesos[2] * valores[2])
+
+        denominador = (pesos[0] * inv_w[0] +
+                       pesos[1] * inv_w[1] +
+                       pesos[2] * inv_w[2])
+        if abs(denominador) < 1e-12:
+            return (pesos[0] * valores[0] +
+                    pesos[1] * valores[1] +
+                    pesos[2] * valores[2])
+
+        return (
+            pesos[0] * valores[0] * inv_w[0] +
+            pesos[1] * valores[1] * inv_w[1] +
+            pesos[2] * valores[2] * inv_w[2]
+        ) / denominador
+
+    @staticmethod
+    def _normalizar_textura(imagem):
+        """Garante que a textura carregada possua canais RGB ou RGBA em uint8."""
+        textura = np.asarray(imagem)
+
+        if textura.ndim == 2:
+            textura = np.repeat(textura[:, :, None], 3, axis=2)
+        elif textura.ndim == 3 and textura.shape[2] == 1:
+            textura = np.repeat(textura, 3, axis=2)
+        elif textura.ndim != 3:
+            raise ValueError("Formato de textura não suportado.")
+
+        # Mantemos no máximo RGBA. Canais adicionais não são necessários aqui.
+        textura = textura[:, :, :4]
+        if textura.dtype != np.uint8:
+            textura = np.clip(np.rint(textura), 0, 255).astype(np.uint8)
+        return textura
+
+    @staticmethod
+    def _gerar_mipmaps(imagem):
+        """Gera a pirâmide de mipmaps por média de blocos 2x2."""
+        nivel = GL._normalizar_textura(imagem)
+        mipmaps = [nivel]
+
+        # GPU.load_texture() já transpõe a imagem. Assim, por convenção deste
+        # projeto, o primeiro eixo da matriz representa U e o segundo representa V.
+        while nivel.shape[0] > 1 or nivel.shape[1] > 1:
+            atual = nivel.astype(float)
+
+            # Repete a última linha/coluna quando a dimensão é ímpar para que toda
+            # amostra do nível anterior contribua para o próximo nível.
+            if atual.shape[0] % 2 == 1:
+                atual = np.concatenate((atual, atual[-1:, :, :]), axis=0)
+            if atual.shape[1] % 2 == 1:
+                atual = np.concatenate((atual, atual[:, -1:, :]), axis=1)
+
+            largura = atual.shape[0] // 2
+            altura = atual.shape[1] // 2
+            canais = atual.shape[2]
+            nivel = np.rint(
+                atual.reshape(largura, 2, altura, 2, canais).mean(axis=(1, 3))
+            ).astype(np.uint8)
+            mipmaps.append(nivel)
+
+        return mipmaps
+
+    @staticmethod
+    def _carregar_mipmaps(nome_textura):
+        """Carrega uma textura pela GPU e devolve seus níveis de mipmap."""
+        if not nome_textura:
+            return None
+
+        if nome_textura not in GL._texture_cache:
+            imagem = gpu.GPU.load_texture(nome_textura)
+            GL._texture_cache[nome_textura] = GL._gerar_mipmaps(imagem)
+
+        return GL._texture_cache[nome_textura]
+
+    @staticmethod
+    def _amostrar_textura(mipmaps, uv, lod=0.0):
+        """Amostra o nível de mipmap mais próximo usando filtragem nearest."""
+        if not mipmaps:
+            return np.array([255.0, 255.0, 255.0]), 1.0
+
+        nivel_indice = int(round(max(0.0, min(float(lod), len(mipmaps) - 1))))
+        textura = mipmaps[nivel_indice]
+
+        # As entradas usadas no projeto ficam no intervalo [0, 1]. Mantemos clamp
+        # para também lidar de forma segura com pequenas imprecisões numéricas.
+        u = min(1.0, max(0.0, float(uv[0])))
+        v = min(1.0, max(0.0, float(uv[1])))
+
+        largura = textura.shape[0]
+        altura = textura.shape[1]
+
+        # O X3D define (0,0) no canto inferior esquerdo. As imagens carregadas pelo
+        # Pillow têm origem superior; por isso invertemos V na hora da amostragem.
+        x = int(round(u * (largura - 1))) if largura > 1 else 0
+        y = int(round((1.0 - v) * (altura - 1))) if altura > 1 else 0
+
+        texel = textura[x, y]
+        rgb = texel[:3].astype(float)
+        alpha = (float(texel[3]) / 255.0) if len(texel) >= 4 else 1.0
+        return rgb, alpha
+
+    @staticmethod
+    def _lod_triangulo(vertices_tela, texcoords, inv_w, mipmaps):
+        """Estima o footprint da textura na tela e seleciona o nível de mipmap."""
+        if not mipmaps or texcoords is None or len(texcoords) != 3:
+            return 0.0
+
+        (x0, y0), (x1, y1), (x2, y2) = vertices_tela
+        area = ((x1 - x0) * (y2 - y0) -
+                (x2 - x0) * (y1 - y0))
+        if abs(area) < 1e-12:
+            return 0.0
+
+        # Derivadas das coordenadas baricêntricas em relação à tela.
+        dl0_dx = -(y2 - y1) / area
+        dl0_dy = (x2 - x1) / area
+        dl1_dx = -(y0 - y2) / area
+        dl1_dy = (x0 - x2) / area
+        dl2_dx = -(y1 - y0) / area
+        dl2_dy = (x1 - x0) / area
+
+        centro = np.array([1/3, 1/3, 1/3], dtype=float)
+        px = centro + np.array([dl0_dx, dl1_dx, dl2_dx])
+        py = centro + np.array([dl0_dy, dl1_dy, dl2_dy])
+
+        uv0 = GL._perspective_interp(centro, texcoords, inv_w)
+        uvx = GL._perspective_interp(px, texcoords, inv_w)
+        uvy = GL._perspective_interp(py, texcoords, inv_w)
+
+        du_dx, dv_dx = uvx - uv0
+        du_dy, dv_dy = uvy - uv0
+
+        # GPU.load_texture() transpõe a imagem: eixo 0 = largura/U, eixo 1 = altura/V.
+        largura_tex = mipmaps[0].shape[0]
+        altura_tex = mipmaps[0].shape[1]
+        rho_x = math.hypot(du_dx * largura_tex, dv_dx * altura_tex)
+        rho_y = math.hypot(du_dy * largura_tex, dv_dy * altura_tex)
+        rho = max(rho_x, rho_y, 1e-12)
+
+        # Magnificação usa nível zero; minificação sobe na pirâmide.
+        return max(0.0, math.log2(rho))
+
+    @staticmethod
+    def _sincronizar_depth_pixel(px, py):
+        """Espelha no depth attachment o menor Z das quatro subamostras."""
+        if GL._ssaa_depth_buffer is None:
             return
 
-        # Mantém a orientação anti-horária para a regra top-left. Se os vértices
-        # forem trocados, os atributos associados a eles também precisam ser.
+        profundidade = float(GL._ssaa_depth_buffer[py, px].min())
+        try:
+            # O buffer interno acima é o autoritativo para SSAA. Este espelhamento
+            # mantém também o depth attachment da GPU coerente com o pixel resolvido.
+            gpu.GPU.draw_pixel([px, py], gpu.GPU.DEPTH_COMPONENT32F,
+                               [profundidade])
+        except Exception:
+            # Mantém compatibilidade caso o usuário ainda não tenha alocado o depth
+            # attachment em Renderizador.setup(). O arquivo complementar fornecido
+            # com esta implementação faz essa alocação.
+            pass
+
+    @staticmethod
+    def _triangulo(x0, y0, x1, y1, x2, y2, rgb,
+                   cores_vertices=None, inv_w=None, depths=None,
+                   texcoords_vertices=None, mipmaps=None,
+                   transparency=0.0):
+        """Rasteriza um triângulo com SSAA, Z-buffer, transparência e textura."""
+        area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)
+        if abs(area) < 1e-12:
+            return
+
+        # Normaliza a orientação e mantém todos os atributos associados ao mesmo
+        # vértice quando for necessário trocar v1 e v2.
         if area < 0:
             x1, y1, x2, y2 = x2, y2, x1, y1
             area = -area
@@ -212,35 +401,49 @@ class GL:
                                    cores_vertices[1]]
             if inv_w is not None:
                 inv_w = [inv_w[0], inv_w[2], inv_w[1]]
+            if depths is not None:
+                depths = [depths[0], depths[2], depths[1]]
+            if texcoords_vertices is not None:
+                texcoords_vertices = [texcoords_vertices[0],
+                                       texcoords_vertices[2],
+                                       texcoords_vertices[1]]
 
-        # O buffer de supersampling é criado de forma preguiçosa. O Viewpoint o
-        # reinicia no começo de cada frame, então triângulos vizinhos compartilham
-        # corretamente suas quatro amostras sem criar costuras nas bordas.
-        if GL._ssaa_buffer is None or GL._ssaa_buffer.shape[:2] != (GL.height, GL.width):
+        if (GL._ssaa_buffer is None or
+                GL._ssaa_buffer.shape[:2] != (GL.height, GL.width) or
+                GL._ssaa_depth_buffer is None):
             GL._reiniciar_supersampling()
+
+        vertices_tela = [(x0, y0), (x1, y1), (x2, y2)]
+        lod = GL._lod_triangulo(vertices_tela, texcoords_vertices, inv_w, mipmaps)
 
         min_x = max(0, math.floor(min(x0, x1, x2)))
         max_x = min(GL.width - 1, math.ceil(max(x0, x1, x2)))
         min_y = max(0, math.floor(min(y0, y1, y2)))
         max_y = min(GL.height - 1, math.ceil(max(y0, y1, y2)))
 
-        # Arestas percorridas sempre no mesmo sentido.
         ax0, ay0 = x1 - x0, y1 - y0
         ax1, ay1 = x2 - x1, y2 - y1
         ax2, ay2 = x0 - x2, y0 - y2
 
-        # Regra top-left: amostras exatamente sobre uma aresta pertencem a apenas
-        # um dos triângulos que compartilham essa aresta.
         b0 = ay0 < 0 or (ay0 == 0 and ax0 > 0)
         b1 = ay1 < 0 or (ay1 == 0 and ax1 > 0)
         b2 = ay2 < 0 or (ay2 == 0 and ax2 > 0)
 
-        # Posições regulares das quatro amostras de um supersampling 2x2.
         offsets = (0.25, 0.75)
-        cor_constante = np.array(rgb, dtype=float)
+        cor_constante = np.array(rgb[:3], dtype=float)
         cores = None
         if cores_vertices is not None and len(cores_vertices) == 3:
-            cores = [np.array(c, dtype=float) for c in cores_vertices]
+            cores = [np.array(c[:3], dtype=float) for c in cores_vertices]
+
+        texcoords = None
+        if texcoords_vertices is not None and len(texcoords_vertices) == 3:
+            texcoords = [np.array(uv[:2], dtype=float)
+                         for uv in texcoords_vertices]
+
+        # X3D usa transparency=0 para opaco e 1 para totalmente transparente.
+        alpha_material = 1.0 - min(1.0, max(0.0, float(transparency or 0.0)))
+        if alpha_material <= 0.0:
+            return
 
         for py in range(min_y, max_y + 1):
             for px in range(min_x, max_x + 1):
@@ -261,47 +464,78 @@ class GL:
                         if e2 < -1e-12 or (abs(e2) < 1e-12 and not b2):
                             continue
 
-                        # e1, e2 e e0 correspondem, respectivamente, aos pesos
-                        # baricêntricos dos vértices 0, 1 e 2.
                         l0 = e1 / area
                         l1 = e2 / area
                         l2 = e0 / area
+                        pesos = np.array([l0, l1, l2], dtype=float)
 
-                        cor_amostra = cor_constante
+                        # Tarefa 3: Z-buffer. A profundidade já está em NDC depois
+                        # da divisão por w, portanto é interpolada linearmente na tela.
+                        profundidade = None
+                        if depths is not None and len(depths) == 3:
+                            profundidade = (l0 * depths[0] +
+                                            l1 * depths[1] +
+                                            l2 * depths[2])
+
+                            # Fora do volume canônico de visualização.
+                            if profundidade < -1.0 or profundidade > 1.0:
+                                continue
+
+                            atual = GL._ssaa_depth_buffer[py, px, sy, sx]
+                            if profundidade > atual + 1e-7:
+                                continue
+
+                        # Cor base: material ou interpolação de cores por vértice.
+                        cor_amostra = cor_constante.copy()
                         if cores is not None:
-                            # Interpolação afim seria simplesmente
-                            # l0*c0 + l1*c1 + l2*c2. Quando inv_w está disponível
-                            # fazemos a correção de perspectiva, interpolando c/w e
-                            # 1/w e dividindo os resultados no final.
-                            if inv_w is not None and len(inv_w) == 3:
-                                denominador = (l0 * inv_w[0] + l1 * inv_w[1] +
-                                               l2 * inv_w[2])
-                                if abs(denominador) > 1e-12:
-                                    cor_amostra = (
-                                        l0 * cores[0] * inv_w[0] +
-                                        l1 * cores[1] * inv_w[1] +
-                                        l2 * cores[2] * inv_w[2]
-                                    ) / denominador
-                                else:
-                                    cor_amostra = (l0 * cores[0] + l1 * cores[1] +
-                                                   l2 * cores[2])
-                            else:
-                                cor_amostra = (l0 * cores[0] + l1 * cores[1] +
-                                               l2 * cores[2])
+                            cor_amostra = GL._perspective_interp(pesos, cores, inv_w)
 
-                        GL._ssaa_buffer[py, px, sy, sx] = np.clip(
-                            np.rint(cor_amostra), 0, 255
-                        ).astype(np.uint8)
+                        alpha_textura = 1.0
+                        if texcoords is not None and mipmaps:
+                            # Tarefa 5: UV também precisa de correção de perspectiva.
+                            uv = GL._perspective_interp(pesos, texcoords, inv_w)
+                            cor_textura, alpha_textura = GL._amostrar_textura(
+                                mipmaps, uv, lod
+                            )
+
+                            # Se também houver Color por vértice, ela modula a
+                            # textura. Sem Color explícita, a textura define o RGB.
+                            if cores is not None:
+                                cor_amostra = cor_textura * (cor_amostra / 255.0)
+                            else:
+                                cor_amostra = cor_textura
+
+                        alpha = alpha_material * alpha_textura
+                        if alpha <= 0.0:
+                            continue
+
+                        cor_amostra = np.clip(cor_amostra, 0, 255)
+
+                        # Tarefa 4: composição alpha "source over". Para superfícies
+                        # transparentes fazemos depth test, mas não depth write. Isso
+                        # permite compor várias transparências já fornecidas em ordem.
+                        if alpha < 1.0 - 1e-12:
+                            destino = GL._ssaa_buffer[py, px, sy, sx].astype(float)
+                            saida = alpha * cor_amostra + (1.0 - alpha) * destino
+                            GL._ssaa_buffer[py, px, sy, sx] = np.clip(
+                                np.rint(saida), 0, 255
+                            ).astype(np.uint8)
+                        else:
+                            GL._ssaa_buffer[py, px, sy, sx] = np.clip(
+                                np.rint(cor_amostra), 0, 255
+                            ).astype(np.uint8)
+
+                            if profundidade is not None:
+                                GL._ssaa_depth_buffer[py, px, sy, sx] = profundidade
+
                         alterou_pixel = True
 
                 if alterou_pixel:
-                    # Resolve as quatro amostras para o pixel final. Isso equivale
-                    # ao downsampling do framebuffer 2x maior, mas sem exigir
-                    # alterações no Renderizador ou na GPU simulada.
                     resolvida = np.rint(
                         GL._ssaa_buffer[py, px].astype(float).mean(axis=(0, 1))
                     ).astype(int).tolist()
                     gpu.GPU.draw_pixel([px, py], gpu.GPU.RGB8, resolvida)
+                    GL._sincronizar_depth_pixel(px, py)
 
     # ------------------------------------------------------------------
     # Nós de geometria 2D do X3D
@@ -388,15 +622,15 @@ class GL:
         for i in range(0, len(vertices) - 5, 6):
             GL._triangulo(vertices[i], vertices[i + 1],
                           vertices[i + 2], vertices[i + 3],
-                          vertices[i + 4], vertices[i + 5], rgb)
+                          vertices[i + 4], vertices[i + 5], rgb,
+                          transparency=colors.get("transparency", 0.0) if colors else 0.0)
 
     @staticmethod
-    def triangleSet(point, colors, vertex_colors=None):
-        """Renderiza TriangleSet e permite interpolação de cores por vértice."""
-        # O parâmetro vertex_colors é opcional e foi acrescentado no Projeto 1.4.
-        # Quando ausente, o comportamento continua igual ao das etapas anteriores:
-        # o triângulo usa a cor emissiva do Material.
+    def triangleSet(point, colors, vertex_colors=None,
+                    vertex_texcoords=None, mipmaps=None):
+        """Renderiza TriangleSet com atributos interpolados e teste de profundidade."""
         rgb = GL._rgb8(colors)
+        transparency = colors.get("transparency", 0.0) if colors else 0.0
 
         aspecto = GL.width / GL.height
         f = 1.0 / math.tan(GL.field_of_view / 2.0)
@@ -412,6 +646,7 @@ class GL:
         for i in range(0, len(point) - 8, 9):
             vertices_tela = []
             inversos_w = []
+            profundidades = []
             triangulo_valido = True
 
             for j in range(3):
@@ -423,13 +658,15 @@ class GL:
                 camera = GL.view_matrix @ mundo
                 clip = projecao @ camera
 
-                # Nesta etapa ainda não há clipping 3D contra o plano near.
+                # Sem clipping homogêneo completo, triângulos com um vértice atrás
+                # da câmera continuam sendo descartados integralmente.
                 if clip[3] <= 0:
                     triangulo_valido = False
                     break
 
                 inversos_w.append(1.0 / clip[3])
                 ndc = clip[:3] / clip[3]
+                profundidades.append(float(ndc[2]))
 
                 x_tela = (ndc[0] + 1.0) * GL.width / 2.0
                 y_tela = (1.0 - ndc[1]) * GL.height / 2.0
@@ -438,8 +675,9 @@ class GL:
             if not triangulo_valido:
                 continue
 
-            cores_triangulo = None
             primeiro_vertice = i // 3
+
+            cores_triangulo = None
             if (vertex_colors is not None and
                     len(vertex_colors) >= (primeiro_vertice + 3) * 3):
                 cores_triangulo = []
@@ -451,10 +689,25 @@ class GL:
                         min(255, max(0, round(vertex_colors[c + 2] * 255)))
                     ])
 
+            texcoords_triangulo = None
+            if (vertex_texcoords is not None and
+                    len(vertex_texcoords) >= (primeiro_vertice + 3) * 2):
+                texcoords_triangulo = []
+                for j in range(3):
+                    t = (primeiro_vertice + j) * 2
+                    texcoords_triangulo.append([
+                        vertex_texcoords[t], vertex_texcoords[t + 1]
+                    ])
+
             GL._triangulo(vertices_tela[0][0], vertices_tela[0][1],
                           vertices_tela[1][0], vertices_tela[1][1],
                           vertices_tela[2][0], vertices_tela[2][1], rgb,
-                          cores_vertices=cores_triangulo, inv_w=inversos_w)
+                          cores_vertices=cores_triangulo,
+                          inv_w=inversos_w,
+                          depths=profundidades,
+                          texcoords_vertices=texcoords_triangulo,
+                          mipmaps=mipmaps,
+                          transparency=transparency)
 
     @staticmethod
     def viewpoint(position, orientation, fieldOfView):
@@ -488,8 +741,8 @@ class GL:
         GL.view_matrix = rotacao_inversa @ translacao_inversa
 
         # O Viewpoint é processado no início de cada frame. Aproveitamos esse
-        # ponto para limpar as quatro amostras internas do supersampling.
-        GL._reiniciar_supersampling()
+        # ponto para limpar cor e profundidade das quatro subamostras.
+        GL.begin_frame()
 
         # Guarda o FOV para a matriz de projeção usada em triangleSet().
         GL.field_of_view = fieldOfView if fieldOfView is not None else math.pi / 4
@@ -633,16 +886,16 @@ class GL:
     @staticmethod
     def indexedFaceSet(coord, coordIndex, colorPerVertex, color, colorIndex,
                        texCoord, texCoordIndex, colors, current_texture):
-        """Renderiza faces indexadas e interpola cores definidas nos vértices."""
+        """Renderiza IndexedFaceSet com cores, Z-buffer e mapeamento de textura."""
         if not coord or not coordIndex:
             return
 
         total_vertices = len(coord) // 3
         total_cores = len(color) // 3 if color else 0
+        total_texcoords = len(texCoord) // 2 if texCoord else 0
 
-        # Separa uma lista indexada por -1 em faces. Essa mesma rotina serve
-        # tanto para coordIndex quanto para colorIndex.
         def separar_faces(indices):
+            """Separa uma lista X3D indexada usando -1 como fim de face."""
             faces = []
             atual = []
             for indice in indices or []:
@@ -658,42 +911,54 @@ class GL:
 
         faces_coord = separar_faces(coordIndex)
         faces_cor = separar_faces(colorIndex) if colorIndex else []
+        faces_tex = separar_faces(texCoordIndex) if texCoordIndex else []
 
         triangulos = []
         cores_triangulos = []
-        tem_cores_vertices = bool(color)
+        texcoords_triangulos = []
+        tem_cores = bool(color)
+        tem_textura = bool(texCoord and current_texture)
+
+        # Tarefa 5: a especificação fornece GPU.load_texture(). O cache evita que
+        # a mesma imagem seja carregada/reduzida repetidamente.
+        mipmaps = None
+        if tem_textura:
+            try:
+                mipmaps = GL._carregar_mipmaps(current_texture[0])
+            except (OSError, IndexError, ValueError):
+                mipmaps = None
+                tem_textura = False
+
+        # Para colorPerVertex=false, colorIndex é conceitualmente um índice por face,
+        # portanto removemos separadores uma única vez.
+        indices_cor_por_face = [i for i in (colorIndex or []) if i != -1]
 
         for numero_face, face in enumerate(faces_coord):
             if len(face) < 3:
                 continue
 
-            # Define como cada posição da face encontra sua cor.
             indices_cor_face = None
             cor_face = None
-
-            if tem_cores_vertices and colorPerVertex:
-                if numero_face < len(faces_cor):
-                    indices_cor_face = faces_cor[numero_face]
-                else:
-                    # Pelo X3D, colorIndex vazio significa usar os próprios
-                    # índices das coordenadas para buscar as cores.
-                    indices_cor_face = face
-            elif tem_cores_vertices:
-                # colorPerVertex=false: uma única cor vale para a face inteira.
-                # Quando colorIndex está vazio, a ordem das faces escolhe a cor.
-                if colorIndex:
-                    indices_planos = [i for i in colorIndex if i != -1]
-                    indice_cor = (indices_planos[numero_face]
-                                  if numero_face < len(indices_planos)
-                                  else numero_face)
-                else:
-                    indice_cor = numero_face
-
+            if tem_cores and colorPerVertex:
+                indices_cor_face = (faces_cor[numero_face]
+                                    if numero_face < len(faces_cor)
+                                    else face)
+            elif tem_cores:
+                indice_cor = (indices_cor_por_face[numero_face]
+                              if numero_face < len(indices_cor_por_face)
+                              else numero_face)
                 if 0 <= indice_cor < total_cores:
                     base_cor = indice_cor * 3
                     cor_face = color[base_cor:base_cor + 3]
 
-            # Triangulação em leque: (v0,v1,v2), (v0,v2,v3), ...
+            # texCoordIndex vazio significa usar coordIndex para os UVs.
+            indices_tex_face = None
+            if tem_textura:
+                indices_tex_face = (faces_tex[numero_face]
+                                    if numero_face < len(faces_tex)
+                                    else face)
+
+            # Triangulação em leque preservando todos os atributos de cada vértice.
             for i in range(1, len(face) - 1):
                 posicoes = (0, i, i + 1)
                 indices_triangulo = tuple(face[p] for p in posicoes)
@@ -706,36 +971,49 @@ class GL:
                     base = indice * 3
                     triangulos.extend(coord[base:base + 3])
 
-                if tem_cores_vertices:
+                if tem_cores:
                     if colorPerVertex:
-                        cores_validas = True
                         cores_temp = []
+                        valido = True
                         for posicao in posicoes:
                             if (indices_cor_face is None or
                                     posicao >= len(indices_cor_face)):
-                                cores_validas = False
+                                valido = False
                                 break
                             indice_cor = indices_cor_face[posicao]
                             if not 0 <= indice_cor < total_cores:
-                                cores_validas = False
+                                valido = False
                                 break
                             base_cor = indice_cor * 3
                             cores_temp.extend(color[base_cor:base_cor + 3])
-
-                        if cores_validas:
-                            cores_triangulos.extend(cores_temp)
-                        else:
-                            # Mantém o alinhamento com os vértices já adicionados.
-                            cores_triangulos.extend([0.0] * 9)
+                        cores_triangulos.extend(cores_temp if valido else [0.0] * 9)
                     else:
-                        if cor_face is not None:
-                            cores_triangulos.extend(cor_face * 3)
-                        else:
-                            cores_triangulos.extend([0.0] * 9)
+                        cores_triangulos.extend((cor_face if cor_face is not None
+                                                 else [0.0, 0.0, 0.0]) * 3)
+
+                if tem_textura:
+                    uv_temp = []
+                    valido = True
+                    for posicao in posicoes:
+                        if (indices_tex_face is None or
+                                posicao >= len(indices_tex_face)):
+                            valido = False
+                            break
+                        indice_tex = indices_tex_face[posicao]
+                        if not 0 <= indice_tex < total_texcoords:
+                            valido = False
+                            break
+                        base_tex = indice_tex * 2
+                        uv_temp.extend(texCoord[base_tex:base_tex + 2])
+                    texcoords_triangulos.extend(uv_temp if valido else [0.0] * 6)
 
         if triangulos:
-            vertex_colors = cores_triangulos if tem_cores_vertices else None
-            GL.triangleSet(triangulos, colors, vertex_colors=vertex_colors)
+            vertex_colors = cores_triangulos if tem_cores else None
+            vertex_texcoords = texcoords_triangulos if tem_textura else None
+            GL.triangleSet(triangulos, colors,
+                           vertex_colors=vertex_colors,
+                           vertex_texcoords=vertex_texcoords,
+                           mipmaps=mipmaps)
 
     @staticmethod
     def box(size, colors):
