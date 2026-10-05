@@ -206,6 +206,7 @@ class Renderizador:
 
         # Se no modo silencioso salvar imagem e não mostrar janela de visualização
         if args.quiet:
+            self.render()
             gpu.GPU.save_image()  # Salva imagem em arquivo
         else:
             window.set_saver(gpu.GPU.save_image)  # pasa a função para salvar imagens

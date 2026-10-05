@@ -129,7 +129,7 @@ class GPU:
     @staticmethod
     def draw_pixel(coord, mode, data):
         """Define o valor do pixel no framebuffer."""
-        if coord and np.any(data):
+        if coord is not None and data is not None:
             if mode in (GPU.RGB8, GPU.RGBA8):  # cores
 
                 #  Verifica se o Framebuffer do canal de cor foi alocado

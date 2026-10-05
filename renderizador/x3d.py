@@ -27,6 +27,7 @@ def clean(child):
 def get_colors(appearance):
     """Método de apoio para recuperar cores de um nó Appearance."""
     colors = {
+        "lit": bool(appearance and appearance.material),
         "diffuseColor": [0.8, 0.8, 0.8],  # Valor padrão
         "emissiveColor": [0.0, 0.0, 0.0],  # Valor padrão
         "specularColor": [0.0, 0.0, 0.0],  # Valor padrão
@@ -345,9 +346,26 @@ class Scene:
             self.children.append(fog)
 
     def render(self):
-        """Rotina de renderização."""
+        """Atualiza relógios e ROUTEs antes de desenhar o estado deste quadro."""
         for child in self.children:
-            child.render()
+            if isinstance(child, Viewpoint):
+                child.render()
+        for child in self.children:
+            if isinstance(child, TimeSensor):
+                child.render()
+        routes = [child for child in self.children if isinstance(child, ROUTE)]
+        for route in routes:
+            if isinstance(X3DNode.named_nodes[route.fromNode], TimeSensor):
+                route.render()
+        for child in self.children:
+            if isinstance(child, X3DInterpolatorNode):
+                child.render()
+        for route in routes:
+            if isinstance(X3DNode.named_nodes[route.fromNode], X3DInterpolatorNode):
+                route.render()
+        for child in self.children:
+            if not isinstance(child, (Viewpoint, TimeSensor, X3DInterpolatorNode, ROUTE)):
+                child.render()
 
 # Core component
 
@@ -1012,6 +1030,8 @@ class DirectionalLight(X3DLightNode):
 
     def render(self):
         """Rotina de renderização."""
+        if not self.on:
+            return
         if "DirectionalLight" not in X3D.renderer:
             raise Exception("DirectionalLight não foi implementado.")
 

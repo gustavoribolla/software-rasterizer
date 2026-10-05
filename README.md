@@ -2,7 +2,7 @@
 
 Renderizador por software desenvolvido para a disciplina de **Computação Gráfica**.
 
-O projeto implementa a rasterização de arquivos X3D e reúne as funcionalidades desenvolvidas nas partes **1.1, 1.2 e 1.3** do Projeto 1. Até esta etapa, o renderizador suporta primitivas 2D, objetos 3D, transformações de modelo e câmera, projeção perspectiva, malhas de triângulos e composição de `Transform` em grafos de cena.
+O projeto implementa a rasterização de arquivos X3D e reúne as partes **1.1 a 1.5** do Projeto 1. O pipeline inclui rasterização 2D e 3D, transformações e grafos de cena, supersampling, interpolação de cores, profundidade, transparência, texturas, iluminação e animação. A parte 1.5 contempla somente as tarefas obrigatórias.
 
 ## Pré-requisitos
 
@@ -207,4 +207,98 @@ A implementação principal das operações gráficas está concentrada em `rend
 
 O projeto utiliza um framebuffer simulado em software para armazenar os pixels gerados antes da exibição ou do salvamento da imagem final.
 
-Até o **Projeto 1.3**, a geometria 3D implementada utiliza principalmente a cor emissiva do `Material`. Recursos como iluminação, texturas, profundidade e outras primitivas 3D pertencem às próximas etapas do renderizador.
+As funções `Box`, `Sphere`, `Cone` e `Cylinder` continuam como esboços do código base. As primitivas opcionais não fazem parte desta implementação. `PointLight` e `Fog` também não estão implementados.
+
+
+## Projeto 1.4 — Amostragem, visibilidade e texturas
+
+O preenchimento de triângulos usa supersampling 2×2 ligado por padrão, com cor e
+profundidade armazenadas por subamostra. Cores e coordenadas UV são interpoladas
+com correção de perspectiva (`atributo/w` dividido pela interpolação de `1/w`).
+O Z-buffer resolve a visibilidade dos opacos; transparências usam composição
+alpha, na ordem fornecida pela cena. As texturas usam `GPU.load_texture()`, cache
+e uma pirâmide de mipmaps, selecionada pelo tamanho projetado da textura.
+
+## Projeto 1.5 — Iluminação e animação
+
+### Iluminação
+
+`GL.triangleSet()` calcula a normal de cada face pelo produto vetorial de duas
+arestas já transformadas para o espaço da câmera. Assim, a normal acompanha as
+rotações e escalas não uniformes do objeto. A normal é constante por triângulo;
+a posição usada para iluminação é interpolada com correção de perspectiva.
+
+`GL._iluminar()` avalia Blinn-Phong por subamostra, somando:
+
+- emissivo: `emissiveColor`, independente das luzes;
+- ambiente: cor da luz × `ambientIntensity` da luz × `ambientIntensity` do
+  material × cor difusa;
+- difuso: cor da luz × intensidade × cor difusa × `max(N·L, 0)`;
+- especular: cor da luz × intensidade × `specularColor` ×
+  `max(N·H, 0) ** (128 * shininess)`, para a face voltada à luz.
+
+`L` aponta para a luz, `V` para a câmera e `H = normalize(L + V)`.
+`GL.directionalLight()` transforma a direção da luz para o espaço da câmera.
+`GL.navigationInfo()` controla o headlight: uma luz branca orientada para −Z
+nesse espaço, que acompanha a câmera. As luzes são reiniciadas a cada quadro;
+`on="false"` desativa uma luz direcional. Cenas sem Material mantêm as cores e
+texturas sem iluminação, preservando os exemplos de interpolação da parte 1.4.
+
+### Animação
+
+`GL.timeSensor()` usa o tempo monotônico decorrido desde o primeiro quadro.
+Divide esse tempo por `cycleInterval`: com `loop=true`, repete o ciclo; com
+`loop=false`, permanece em 1 ao terminar. Todos os sensores usam o mesmo
+instante do quadro.
+
+`GL.splinePositionInterpolator()` retorna uma posição sobre uma spline cúbica
+de Hermite, com tangentes calculadas a partir das posições vizinhas e ajuste
+para o espaçamento entre chaves. Curvas abertas começam e terminam em repouso;
+curvas fechadas com posições extremas iguais usam os vizinhos da emenda.
+
+`GL.orientationInterpolator()` converte eixo-ângulo em quaternions, interpola
+pelo menor arco com SLERP e retorna eixo-ângulo em `value_changed`. Para
+orientações muito próximas, usa interpolação linear normalizada para evitar
+instabilidade numérica.
+
+O percurso da cena processa, no mesmo quadro:
+
+```text
+Viewpoint e início do quadro → TimeSensor → ROUTEs dos relógios
+→ interpoladores → ROUTEs das transformações → luzes e geometria
+```
+
+O framebuffer e as subamostras de cor/profundidade são limpos a cada quadro.
+Não há implementação de double buffering. A escrita de pixels aceita preto
+(zero), necessário para superfícies sem luz, e o modo `--quiet` renderiza antes
+de salvar a imagem.
+
+### Exemplos obrigatórios e verificação
+
+Execute a partir da raiz do repositório:
+
+```sh
+python3 exemplos.py difusos
+python3 exemplos.py mineiro
+python3 exemplos.py senoide_difusa
+python3 exemplos.py senoide_especular
+python3 exemplos.py onda
+python3 exemplos.py piramide
+python3 exemplos.py avatar_animado
+python3 -m unittest discover -s tests -v
+```
+
+Os testes verificam os termos de iluminação, normais sob escala não uniforme,
+headlight, ciclos, splines, SLERP, atualização das transformações no mesmo quadro,
+limpeza dos buffers e renderização dos sete exemplos obrigatórios em resolução
+reduzida. Os exemplos animados abrem em modo contínuo; `-p` no renderizador
+exibe apenas o primeiro quadro.
+
+A implementação permanece limitada ao subconjunto de X3D do projeto: normais
+por face calculadas da geometria, luzes direcionais declaradas na raiz da cena
+e ligações de animação `TimeSensor → interpolador → Transform`. Não implementa
+o sistema completo de eventos do X3D, normais explícitas ou suavização de normais
+entre faces.
+
+Referências: [iluminação X3D](https://www.web3d.org/documents/specifications/19775-1/V3.3/Part01/components/lighting.html#Lightingmodel)
+e [interpolação X3D](https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/interpolators.html#HermiteSplineInterpolation).

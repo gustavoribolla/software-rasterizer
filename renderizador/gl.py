@@ -8,7 +8,7 @@ Biblioteca Gráfica / Graphics Library.
 
 Desenvolvido por: Gustavo Colombi Ribolla e Luigi Orlandi Quinze
 Disciplina: Computação Gráfica
-Data: 28/09/2026
+Data: 05/10/2026
 """
 
 import time         # Para operações com tempo
@@ -50,6 +50,11 @@ class GL:
     # e recalcular todos os níveis a cada triângulo/frame.
     _texture_cache = {}
 
+    # Luzes em coordenadas da câmera e relógio comum às animações da cena.
+    _lights = []
+    _animation_start = None
+    _frame_elapsed = 0.0
+
     @staticmethod
     def setup(width, height, near=0.01, far=1000):
         """Define o tamanho da tela e os planos de corte próximo e distante."""
@@ -66,6 +71,9 @@ class GL:
         GL._ssaa_buffer = None
         GL._ssaa_depth_buffer = None
         GL._texture_cache = {}
+        GL._lights = []
+        GL._animation_start = None
+        GL._frame_elapsed = 0.0
 
     @staticmethod
     def _matriz_rotacao(rotation):
@@ -192,6 +200,43 @@ class GL:
     def begin_frame():
         """Reinicia os buffers internos usados em um novo frame."""
         GL._reiniciar_supersampling()
+        GL._lights = []
+        agora = time.monotonic()
+        if GL._animation_start is None:
+            GL._animation_start = agora
+        GL._frame_elapsed = agora - GL._animation_start
+
+    @staticmethod
+    def _normalizar(vetor):
+        """Normaliza uma direção, mantendo vetores nulos sem divisão por zero."""
+        vetor = np.asarray(vetor, dtype=float)
+        norma = np.linalg.norm(vetor)
+        return vetor / norma if norma > 1e-12 else np.zeros(3)
+
+    @staticmethod
+    def _iluminar(posicao, normal, material, difusa):
+        """Blinn-Phong no espaço da câmera; entradas e saída RGB em [0, 1]."""
+        emissiva = np.asarray(material.get("emissiveColor", [0, 0, 0]), dtype=float)
+        especular = np.asarray(material.get("specularColor", [0, 0, 0]), dtype=float)
+        ambiente = material.get("ambientIntensity", 0.2)
+        expoente = 128.0 * material.get("shininess", 0.2)
+        cor = emissiva.copy()
+        visao = GL._normalizar(-posicao)
+
+        for luz in GL._lights:
+            l = luz["to_light"]
+            n_dot_l = max(0.0, float(np.dot(normal, l)))
+            reflexao = np.zeros(3)
+            if n_dot_l > 0 and np.any(especular):
+                # H é a direção intermediária entre a luz e o observador.
+                h = GL._normalizar(l + visao)
+                brilho = max(0.0, float(np.dot(normal, h))) ** expoente
+                reflexao = especular * brilho
+            cor += luz["color"] * (
+                luz["ambient"] * ambiente * difusa +
+                luz["intensity"] * (difusa * n_dot_l + reflexao)
+            )
+        return np.clip(cor, 0.0, 1.0)
 
     @staticmethod
     def _reiniciar_supersampling():
@@ -385,7 +430,8 @@ class GL:
     def _triangulo(x0, y0, x1, y1, x2, y2, rgb,
                    cores_vertices=None, inv_w=None, depths=None,
                    texcoords_vertices=None, mipmaps=None,
-                   transparency=0.0):
+                   transparency=0.0, posicoes_camera=None,
+                   normal=None, material=None):
         """Rasteriza um triângulo com SSAA, Z-buffer, transparência e textura."""
         area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)
         if abs(area) < 1e-12:
@@ -407,6 +453,9 @@ class GL:
                 texcoords_vertices = [texcoords_vertices[0],
                                        texcoords_vertices[2],
                                        texcoords_vertices[1]]
+            if posicoes_camera is not None:
+                posicoes_camera = [posicoes_camera[0], posicoes_camera[2],
+                                   posicoes_camera[1]]
 
         if (GL._ssaa_buffer is None or
                 GL._ssaa_buffer.shape[:2] != (GL.height, GL.width) or
@@ -439,6 +488,10 @@ class GL:
         if texcoords_vertices is not None and len(texcoords_vertices) == 3:
             texcoords = [np.array(uv[:2], dtype=float)
                          for uv in texcoords_vertices]
+
+        iluminado = material is not None and posicoes_camera is not None
+        if iluminado:
+            cor_constante = 255.0 * np.asarray(material.get("diffuseColor", [0.8]*3))
 
         # X3D usa transparency=0 para opaco e 1 para totalmente transparente.
         alpha_material = 1.0 - min(1.0, max(0.0, float(transparency or 0.0)))
@@ -504,6 +557,12 @@ class GL:
                                 cor_amostra = cor_textura * (cor_amostra / 255.0)
                             else:
                                 cor_amostra = cor_textura
+
+                        if iluminado:
+                            posicao = GL._perspective_interp(pesos, posicoes_camera, inv_w)
+                            cor_amostra = 255.0 * GL._iluminar(
+                                posicao, normal, material, cor_amostra / 255.0
+                            )
 
                         alpha = alpha_material * alpha_textura
                         if alpha <= 0.0:
@@ -645,6 +704,7 @@ class GL:
 
         for i in range(0, len(point) - 8, 9):
             vertices_tela = []
+            posicoes_camera = []
             inversos_w = []
             profundidades = []
             triangulo_valido = True
@@ -656,6 +716,7 @@ class GL:
 
                 mundo = GL.model_matrix @ vertice
                 camera = GL.view_matrix @ mundo
+                posicoes_camera.append(camera[:3])
                 clip = projecao @ camera
 
                 # Sem clipping homogêneo completo, triângulos com um vértice atrás
@@ -674,6 +735,14 @@ class GL:
 
             if not triangulo_valido:
                 continue
+
+            # Produto vetorial após model/view: a normal acompanha inclusive
+            # escalas não uniformes, sem ser afetada pela projeção perspectiva.
+            normal = GL._normalizar(np.cross(
+                posicoes_camera[1] - posicoes_camera[0],
+                posicoes_camera[2] - posicoes_camera[0]
+            ))
+            material = colors if colors and colors.get("lit", True) else None
 
             primeiro_vertice = i // 3
 
@@ -707,7 +776,9 @@ class GL:
                           depths=profundidades,
                           texcoords_vertices=texcoords_triangulo,
                           mipmaps=mipmaps,
-                          transparency=transparency)
+                          transparency=transparency,
+                          posicoes_camera=posicoes_camera,
+                          normal=normal, material=material)
 
     @staticmethod
     def viewpoint(position, orientation, fieldOfView):
@@ -1081,32 +1152,22 @@ class GL:
 
     @staticmethod
     def navigationInfo(headlight):
-        """Características físicas do avatar do visualizador e do modelo de visualização."""
-        # https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/navigation.html#NavigationInfo
-        # O campo do headlight especifica se um navegador deve acender um luz direcional que
-        # sempre aponta na direção que o usuário está olhando. Definir este campo como TRUE
-        # faz com que o visualizador forneça sempre uma luz do ponto de vista do usuário.
-        # A luz headlight deve ser direcional, ter intensidade = 1, cor = (1 1 1),
-        # ambientIntensity = 0,0 e direção = (0 0 −1).
-
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("NavigationInfo : headlight = {0}".format(headlight)) # imprime no terminal
+        """Acende uma luz branca que acompanha a câmera, apontando para -Z."""
+        if headlight:
+            GL._lights.append({
+                "to_light": np.array([0.0, 0.0, 1.0]),
+                "color": np.ones(3), "ambient": 0.0, "intensity": 1.0
+            })
 
     @staticmethod
     def directionalLight(ambientIntensity, color, intensity, direction):
-        """Luz direcional ou paralela."""
-        # https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/lighting.html#DirectionalLight
-        # Define uma fonte de luz direcional que ilumina ao longo de raios paralelos
-        # em um determinado vetor tridimensional. Possui os campos básicos ambientIntensity,
-        # cor, intensidade. O campo de direção especifica o vetor de direção da iluminação
-        # que emana da fonte de luz no sistema de coordenadas local. A luz é emitida ao
-        # longo de raios paralelos de uma distância infinita.
-
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("DirectionalLight : ambientIntensity = {0}".format(ambientIntensity))
-        print("DirectionalLight : color = {0}".format(color)) # imprime no terminal
-        print("DirectionalLight : intensity = {0}".format(intensity)) # imprime no terminal
-        print("DirectionalLight : direction = {0}".format(direction)) # imprime no terminal
+        """Registra uma luz direcional no mesmo espaço dos vértices iluminados."""
+        direcao = (GL.view_matrix @ GL.model_matrix)[:3, :3] @ np.asarray(direction)
+        GL._lights.append({
+            "to_light": -GL._normalizar(direcao),
+            "color": np.asarray(color, dtype=float),
+            "ambient": ambientIntensity, "intensity": intensity
+        })
 
     @staticmethod
     def pointLight(ambientIntensity, color, intensity, location):
@@ -1142,74 +1203,107 @@ class GL:
 
     @staticmethod
     def timeSensor(cycleInterval, loop):
-        """Gera eventos conforme o tempo passa."""
-        # https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/time.html#TimeSensor
-        # Os nós TimeSensor podem ser usados para muitas finalidades, incluindo:
-        # Condução de simulações e animações contínuas; Controlar atividades periódicas;
-        # iniciar eventos de ocorrência única, como um despertador;
-        # Se, no final de um ciclo, o valor do loop for FALSE, a execução é encerrada.
-        # Por outro lado, se o loop for TRUE no final de um ciclo, um nó dependente do
-        # tempo continua a execução no próximo ciclo. O ciclo de um nó TimeSensor dura
-        # cycleInterval segundos. O valor de cycleInterval deve ser maior que zero.
-
-        # Deve retornar a fração de tempo passada em fraction_changed
-
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("TimeSensor : cycleInterval = {0}".format(cycleInterval)) # imprime no terminal
-        print("TimeSensor : loop = {0}".format(loop))
-
-        # Esse método já está implementado para os alunos como exemplo
-        epoch = time.time()  # time in seconds since the epoch as a floating point number.
-        fraction_changed = (epoch % cycleInterval) / cycleInterval
-
+        """Fração do ciclo desde o primeiro quadro; sem loop, para no valor 1."""
+        if cycleInterval <= 0:
+            raise ValueError("cycleInterval deve ser positivo.")
+        ciclos = GL._frame_elapsed / cycleInterval
+        if not loop:
+            return min(1.0, max(0.0, ciclos))
+        fraction_changed = ciclos % 1.0
+        # No instante exato de fechamento de um ciclo, entrega sua última chave.
+        if ciclos > 0.0 and fraction_changed == 0.0:
+            fraction_changed = 1.0
         return fraction_changed
 
     @staticmethod
+    def _intervalo_chaves(fracao, key):
+        """Localiza as chaves vizinhas e a fração local, limitando as extremidades."""
+        if len(key) == 1 or fracao <= key[0]:
+            return 0, 0, 0.0
+        if fracao >= key[-1]:
+            return len(key) - 1, len(key) - 1, 0.0
+        i = int(np.searchsorted(key, fracao, side="right")) - 1
+        return i, i + 1, (fracao - key[i]) / (key[i + 1] - key[i])
+
+    @staticmethod
     def splinePositionInterpolator(set_fraction, key, keyValue, closed):
-        """Interpola não linearmente entre uma lista de vetores 3D."""
-        # https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/interpolators.html#SplinePositionInterpolator
-        # Interpola não linearmente entre uma lista de vetores 3D. O campo keyValue possui
-        # uma lista com os valores a serem interpolados, key possui uma lista respectiva de chaves
-        # dos valores em keyValue, a fração a ser interpolada vem de set_fraction que varia de
-        # zero a um. O campo keyValue deve conter exatamente tantos vetores 3D quanto os
-        # quadros-chave no key. O campo closed especifica se o interpolador deve tratar a malha
-        # como fechada, com uma transições da última chave para a primeira chave. Se os keyValues
-        # na primeira e na última chave não forem idênticos, o campo closed será ignorado.
+        """Spline cúbica de Hermite, com tangentes calculadas pelas posições vizinhas."""
+        if not key or not keyValue:
+            return [0.0, 0.0, 0.0]
+        pontos = np.asarray(keyValue, dtype=float).reshape(-1, 3)
+        if len(pontos) != len(key):
+            raise ValueError("Cada key precisa de uma posição em keyValue.")
+        i, j, t = GL._intervalo_chaves(set_fraction, key)
+        if i == j:
+            return pontos[i].tolist()
 
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("SplinePositionInterpolator : set_fraction = {0}".format(set_fraction))
-        print("SplinePositionInterpolator : key = {0}".format(key)) # imprime no terminal
-        print("SplinePositionInterpolator : keyValue = {0}".format(keyValue))
-        print("SplinePositionInterpolator : closed = {0}".format(closed))
+        fechado = closed and len(key) > 2 and np.allclose(pontos[0], pontos[-1])
 
-        # Abaixo está só um exemplo de como os dados podem ser calculados e transferidos
-        value_changed = [0.0, 0.0, 0.0]
-        
-        return value_changed
+        def tangente(indice, saida):
+            # Sem velocidades fornecidas, o X3D começa/termina uma curva aberta
+            # em repouso. Curvas fechadas usam os vizinhos do outro lado da emenda.
+            if indice in (0, len(key) - 1):
+                if not fechado:
+                    return np.zeros(3)
+                anterior, proximo = pontos[-2], pontos[1]
+                dt_anterior = key[-1] - key[-2]
+                dt_proximo = key[1] - key[0]
+            else:
+                anterior, proximo = pontos[indice - 1], pontos[indice + 1]
+                dt_anterior = key[indice] - key[indice - 1]
+                dt_proximo = key[indice + 1] - key[indice]
+            intervalo = dt_anterior + dt_proximo
+            if intervalo <= 0:
+                return np.zeros(3)
+            # Ajustes F+ e F- do X3D para chaves com espaçamentos diferentes.
+            fator = (dt_anterior if saida else dt_proximo) / intervalo
+            return fator * (proximo - anterior)
+
+        h00 = 2*t**3 - 3*t**2 + 1
+        h10 = t**3 - 2*t**2 + t
+        h01 = -2*t**3 + 3*t**2
+        h11 = t**3 - t**2
+        value_changed = (h00 * pontos[i] + h10 * tangente(i, True) +
+                         h01 * pontos[j] + h11 * tangente(j, False))
+        return value_changed.tolist()
 
     @staticmethod
     def orientationInterpolator(set_fraction, key, keyValue):
-        """Interpola entre uma lista de valores de rotação específicos."""
-        # https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/interpolators.html#OrientationInterpolator
-        # As rotações interpoladas são absolutas no espaço do objeto e, portanto, não são cumulativas.
-        # Uma orientação representa a posição final de um objeto após a aplicação de uma rotação.
-        # Um OrientationInterpolator interpola entre duas orientações calculando o caminho mais
-        # curto na esfera unitária entre as duas orientações. A interpolação é linear em
-        # comprimento de arco ao longo deste caminho. Os resultados são indefinidos se as duas
-        # orientações forem diagonalmente opostas. O campo keyValue possui uma lista com os
-        # valores a serem interpolados, key possui uma lista respectiva de chaves
-        # dos valores em keyValue, a fração a ser interpolada vem de set_fraction que varia de
-        # zero a um. O campo keyValue deve conter exatamente tantas rotações 3D quanto os
-        # quadros-chave no key.
+        """SLERP de quaternions pelo arco mais curto; retorna eixo-ângulo X3D."""
+        if not key or not keyValue:
+            return [0.0, 0.0, 1.0, 0.0]
+        rotacoes = np.asarray(keyValue, dtype=float).reshape(-1, 4)
+        if len(rotacoes) != len(key):
+            raise ValueError("Cada key precisa de uma rotação em keyValue.")
+        i, j, t = GL._intervalo_chaves(set_fraction, key)
+        if i == j:
+            return rotacoes[i].tolist()
 
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("OrientationInterpolator : set_fraction = {0}".format(set_fraction))
-        print("OrientationInterpolator : key = {0}".format(key)) # imprime no terminal
-        print("OrientationInterpolator : keyValue = {0}".format(keyValue))
+        def quaternion(rotacao):
+            eixo = GL._normalizar(rotacao[:3])
+            if not np.any(eixo):
+                return np.array([0.0, 0.0, 0.0, 1.0])
+            meio_angulo = rotacao[3] / 2.0
+            return np.append(eixo * math.sin(meio_angulo), math.cos(meio_angulo))
 
-        # Abaixo está só um exemplo de como os dados podem ser calculados e transferidos
-        value_changed = [0, 0, 1, 0]
-
+        q0, q1 = quaternion(rotacoes[i]), quaternion(rotacoes[j])
+        produto = float(np.dot(q0, q1))
+        if produto < 0:
+            # q e -q representam a mesma orientação; escolhemos o arco menor.
+            q1 = -q1
+            produto = -produto
+        produto = min(1.0, max(-1.0, produto))
+        if produto > 0.9995:
+            q = (1.0 - t) * q0 + t * q1
+        else:
+            angulo = math.acos(produto)
+            q = (math.sin((1.0 - t) * angulo) * q0 +
+                 math.sin(t * angulo) * q1) / math.sin(angulo)
+        q /= np.linalg.norm(q)
+        seno = np.linalg.norm(q[:3])
+        if seno < 1e-12:
+            return [0.0, 0.0, 1.0, 0.0]
+        value_changed = (q[:3] / seno).tolist() + [2.0 * math.atan2(seno, q[3])]
         return value_changed
 
     # Para o futuro (Não para versão atual do projeto.)
