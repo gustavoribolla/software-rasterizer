@@ -2,132 +2,224 @@
 
 Renderizador por software desenvolvido para a disciplina de **Computação Gráfica**.
 
-O projeto implementa a rasterização de arquivos X3D e reúne as partes **1.1 a 1.5** do Projeto 1. O pipeline inclui rasterização 2D e 3D, transformações e grafos de cena, supersampling, interpolação de cores, profundidade, transparência, texturas, iluminação e animação. A parte 1.5 contempla somente as tarefas obrigatórias.
+O projeto reúne as partes **1.1 a 1.5** do Projeto 1 e implementa rasterização de
+arquivos X3D em software. O pipeline inclui rasterização 2D e 3D, transformações,
+grafos de cena, supersampling, interpolação de atributos, Z-buffer, transparência,
+texturas, iluminação e animação.
+
+A parte 1.5 contempla as tarefas obrigatórias. As primitivas geométricas extras
+(`Box`, `Sphere`, `Cone` e `Cylinder`) permanecem como esboços do código base.
+
+---
 
 ## Pré-requisitos
 
-Instale as dependências com:
+Instale as dependências a partir da raiz do repositório.
+
+### Windows
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+### Linux/macOS
 
 ```sh
-pip3 install -r requirements.txt
+python3 -m pip install -r requirements.txt
 ```
+
+---
 
 ## Uso
 
-Para executar o renderizador diretamente:
+### Windows
+
+Para executar diretamente um arquivo X3D:
+
+```powershell
+python renderizador/renderizador.py -i <arquivo.x3d>
+```
+
+Para abrir a lista de exemplos e escolher um deles:
+
+```powershell
+python exemplos.py
+```
+
+Também é possível executar um exemplo pelo **nome**:
+
+```powershell
+python exemplos.py zoom
+```
+
+ou pelo **número** mostrado na lista:
+
+```powershell
+python exemplos.py 11
+```
+
+O carregador também aceita uma faixa de exemplos:
+
+```powershell
+python exemplos.py 9..11
+```
+
+e vários números de uma vez:
+
+```powershell
+python exemplos.py 9 10 11
+```
+
+### Linux/macOS
+
+Os mesmos comandos podem ser executados com `python3`:
 
 ```sh
 python3 renderizador/renderizador.py -i <arquivo.x3d>
+python3 exemplos.py
+python3 exemplos.py zoom
+python3 exemplos.py 11
+python3 exemplos.py 9..11
 ```
 
-Também é possível executar os exemplos disponíveis no projeto:
+> Os números dos exemplos começam em **0**. Assim, `zoom` corresponde ao exemplo
+> **11**, enquanto `aleatorios` corresponde ao exemplo **0**.
 
-```sh
-python3 exemplos.py <nome_do_exemplo>
-```
+---
 
-### Opções do renderizador
+## Opções do renderizador
 
-* `-i`, `--input`: arquivo X3D de entrada
-* `-o`, `--output`: arquivo de saída (imagem)
-* `-w`, `--width`: resolução horizontal
-* `-h`, `--height`: resolução vertical
-* `-g`, `--graph`: imprime o grafo de cena
-* `-p`, `--pause`: inicia a visualização em pausa
-* `-q`, `--quiet`: executa sem exibir a janela
+- `-i`, `--input`: arquivo X3D de entrada
+- `-o`, `--output`: arquivo de saída (imagem)
+- `-w`, `--width`: resolução horizontal
+- `-h`, `--height`: resolução vertical
+- `-g`, `--graph`: imprime o grafo de cena
+- `-p`, `--pause`: inicia a visualização em pausa
+- `-q`, `--quiet`: executa sem exibir a janela
 
-## Funcionalidades implementadas
+---
 
-| Função | Descrição |
-| --- | --- |
-| `GL.polypoint2D()` | Desenha pontos 2D no framebuffer. |
-| `GL.polyline2D()` | Rasteriza segmentos de reta usando DDA e recorte aos limites da tela. |
-| `GL.circle2D()` | Aproxima e rasteriza o contorno de círculos 2D. |
-| `GL.triangleSet2D()` | Preenche triângulos 2D usando funções de aresta e regra top-left. |
-| `GL.triangleSet()` | Processa triângulos 3D pelo pipeline de modelo, câmera, perspectiva e tela. |
-| `GL.viewpoint()` | Monta a matriz de visualização a partir da posição, orientação e `fieldOfView` da câmera. |
-| `GL.transform_in()` | Compõe a transformação local com a matriz de modelo acumulada e salva a matriz do nó pai. |
-| `GL.transform_out()` | Restaura a matriz do nó pai ao sair de um `Transform`, permitindo grafos de cena aninhados. |
-| `GL.triangleStripSet()` | Converte tiras de vértices em triângulos e as envia para o pipeline 3D. |
-| `GL.indexedTriangleStripSet()` | Monta tiras de triângulos a partir de índices separados por `-1`. |
-| `GL.indexedFaceSet()` | Triangula faces indexadas em leque e as envia para o pipeline 3D. |
+# Mapa dos exemplos para o código
 
-## Projeto 1.1 — Rasterização 2D
+Esta é a referência rápida para relacionar o número apresentado por
+`exemplos.py` com as funções da classe `GL`.
 
-A primeira etapa implementa a rasterização básica diretamente no framebuffer:
+A coluna **Onde começar** indica a melhor função para procurar primeiro em
+`renderizador/gl.py`. A coluna **Funções relacionadas** mostra o caminho
+principal usado pela implementação.
 
-* pontos;
-* segmentos de reta;
-* círculos;
-* triângulos preenchidos.
+## Projeto 1.1 - Rasterização 2D
 
-As linhas são rasterizadas pelo algoritmo DDA. Para triângulos, a implementação testa o centro dos pixels dentro da bounding box e utiliza a regra **top-left** para tratar pixels compartilhados entre triângulos vizinhos.
+| Nº | Exemplo | Onde começar | Funções relacionadas | Principal funcionalidade |
+| ---: | --- | --- | --- | --- |
+| **0** | `aleatorios` | `GL.polypoint2D()` | `polypoint2D()` → `_rgb8()` → `_pixel()` | Pontos 2D coloridos |
+| **1** | `linhas_cores` | `GL.polyline2D()` | `polyline2D()` → `_linha()` → `_faixa_visivel()` → `_pixel()` | Linhas, DDA e clipping |
+| **2** | `octogono` | `GL.polyline2D()` | `polyline2D()` → `_linha()` → `_faixa_visivel()` → `_pixel()` | Poligonal formada por segmentos |
+| **3** | `linhas_cruzes` | `GL.polyline2D()` | `polyline2D()` → `_linha()` → `_faixa_visivel()` → `_pixel()` | Linhas em diferentes direções |
+| **4** | `varias_linhas` | `GL.polyline2D()` | `polyline2D()` → `_linha()` → `_faixa_visivel()` → `_pixel()` | Vários segmentos e recorte |
+| **5** | `circulo` | `GL.circle2D()` | `circle2D()` → `_linha()` → `_faixa_visivel()` → `_pixel()` | Círculo aproximado por segmentos |
+| **6** | `triangulos` | `GL.triangleSet2D()` | `triangleSet2D()` → `_triangulo()` | Triângulos 2D preenchidos |
+| **7** | `helice` | `GL.triangleSet2D()` | `triangleSet2D()` → `_triangulo()` | Conjunto de triângulos 2D |
+| **8** | `pontas` | `GL.triangleSet2D()` | `triangleSet2D()` → `_triangulo()` | Triângulos 2D em diferentes orientações |
 
-## Projeto 1.2 — Pipeline 3D
+### Funções principais da etapa
 
-Os vértices de um objeto 3D passam pelas seguintes etapas:
+- `GL.polypoint2D()`: recebe pares `(x, y)` e escreve os pixels correspondentes.
+- `GL.polyline2D()`: liga cada ponto ao próximo.
+- `GL._linha()`: rasteriza cada segmento pelo algoritmo DDA.
+- `GL._faixa_visivel()`: aplica clipping de Liang-Barsky antes de percorrer a linha.
+- `GL.circle2D()`: aproxima o círculo por segmentos de reta.
+- `GL.triangleSet2D()`: agrupa três vértices por triângulo e chama `_triangulo()`.
+- `GL._triangulo()`: realiza o preenchimento do triângulo.
+
+---
+
+## Projeto 1.2 - Pipeline 3D
+
+| Nº | Exemplo | Onde começar | Funções relacionadas | Principal funcionalidade |
+| ---: | --- | --- | --- | --- |
+| **9** | `um_triangulo` | `GL.triangleSet()` | `transform_in()` → `viewpoint()` → `triangleSet()` → `_triangulo()` | Pipeline 3D básico |
+| **10** | `varios_triangs` | `GL.triangleSet()` | `transform_in()` → `viewpoint()` → `triangleSet()` → `_triangulo()` | Pipeline aplicado a vários triângulos |
+| **11** | `zoom` | `GL.viewpoint()` | `viewpoint()` → `triangleSet()` → `_triangulo()` | Câmera, `fieldOfView` e projeção perspectiva |
+
+### Fluxo de um vértice 3D
 
 ```text
-Vértices do objeto
-        ↓
-Transformação de modelo
-        ↓
-Transformação de câmera
-        ↓
-Projeção perspectiva
-        ↓
-Coordenadas normalizadas (NDC)
-        ↓
-Coordenadas da tela
-        ↓
-Rasterização
-        ↓
-Framebuffer
+vértice local
+    ↓
+GL.transform_in()
+    ↓
+matriz de modelo
+    ↓
+GL.viewpoint()
+    ↓
+matriz de câmera
+    ↓
+GL.triangleSet()
+    ↓
+projeção perspectiva
+    ↓
+divisão por w
+    ↓
+NDC
+    ↓
+viewport
+    ↓
+GL._triangulo()
+    ↓
+framebuffer
 ```
 
-### Transformação de modelo
+### Onde observar o `zoom`
 
-Os nós `Transform` podem aplicar:
+O exemplo **11 - `zoom`** é especialmente relacionado a:
 
-* escala;
-* rotação eixo-ângulo;
-* translação.
+- `GL.viewpoint()`: recebe `position`, `orientation` e `fieldOfView`;
+- `GL.triangleSet()`: usa `GL.field_of_view` para construir a matriz de projeção;
+- transformação para NDC: `clip[:3] / clip[3]`;
+- viewport: converte `x` e `y` de NDC para coordenadas da tela;
+- `GL._triangulo()`: rasteriza o resultado final.
 
-As operações são representadas por matrizes homogêneas 4×4. Para vetores-coluna, a matriz local utilizada é:
+A matriz de projeção em `triangleSet()` usa:
 
 ```text
-Mlocal = T · R · S
+f = 1 / tan(fieldOfView / 2)
 ```
 
-### Transformação de câmera
+Assim, alterar o campo de visão modifica o tamanho aparente dos objetos na tela.
 
-O nó `Viewpoint` fornece a posição, a orientação e o campo de visão da câmera. A matriz de visualização utiliza a transformação inversa da câmera para levar os pontos do mundo ao espaço de visão.
+---
 
-### Projeção perspectiva
+## Projeto 1.3 - Malhas e grafo de cena
 
-Depois da transformação de câmera, é aplicada uma matriz de projeção perspectiva usando o `fieldOfView`, a razão de aspecto e os planos `near` e `far`.
+| Nº | Exemplo | Onde começar | Funções relacionadas | Principal funcionalidade |
+| ---: | --- | --- | --- | --- |
+| **12** | `tiras` | `GL.triangleStripSet()` | `triangleStripSet()` → `triangleSet()` → `_triangulo()` | Triangle strips |
+| **13** | `letras` | `GL.indexedTriangleStripSet()` | `indexedTriangleStripSet()` → `triangleSet()` → `_triangulo()` | Triangle strips indexadas |
+| **14** | `leques` | `GL.indexedFaceSet()` | `indexedFaceSet()` → triangulação → `triangleSet()` → `_triangulo()` | Faces indexadas e triangulação |
+| **15** | `vertices10` | `GL.indexedFaceSet()` | `indexedFaceSet()` → triangulação → `triangleSet()` → `_triangulo()` | Face com vários vértices |
+| **16** | `estrela` | `GL.indexedFaceSet()` / `GL.indexedTriangleStripSet()` | malha indexada → `triangleSet()` → `_triangulo()` | Malha construída por índices |
+| **17** | `bound500` | `GL.transform_in()` | `transform_in()` ↔ `transform_out()` → geometria | Transformações no grafo de cena |
+| **18** | `avatar` | `GL.transform_in()` | `transform_in()` ↔ `transform_out()` → `indexedFaceSet()` → `triangleSet()` | `Transform` aninhado |
+| **19** | `girando` | `GL.transform_in()` | `_matriz_rotacao()` → `transform_in()` ↔ `transform_out()` | Rotação e hierarquia |
 
-Após a divisão pela coordenada homogênea `w`, os vértices ficam em NDC e são convertidos para coordenadas de pixels do framebuffer.
+### Malhas
 
-## Projeto 1.3 — Malhas e grafo de cena
+#### `GL.triangleStripSet()`
 
-### Malhas de triângulos
+Uma tira com `n` vértices gera `n - 2` triângulos. A orientação alterna entre
+triângulos pares e ímpares, portanto a ordem dos dois primeiros vértices é
+invertida quando necessário.
 
-O renderizador suporta três novas formas de representar malhas 3D.
+#### `GL.indexedTriangleStripSet()`
 
-#### `TriangleStripSet`
+Funciona como `TriangleStripSet`, mas busca os vértices por índices. O valor
+`-1` encerra uma tira e inicia a próxima.
 
-Cada valor de `stripCount` informa quantos vértices pertencem a uma tira. Uma tira com `n` vértices gera `n - 2` triângulos consecutivos.
+#### `GL.indexedFaceSet()`
 
-A ordem dos vértices é alternada entre triângulos pares e ímpares para manter uma orientação consistente.
-
-#### `IndexedTriangleStripSet`
-
-Funciona de forma semelhante ao `TriangleStripSet`, mas os triângulos são construídos usando índices para a lista de coordenadas. O valor `-1` separa uma tira da seguinte.
-
-#### `IndexedFaceSet`
-
-Cada sequência de índices terminada em `-1` representa uma face. Faces com mais de três vértices são trianguladas em leque:
+O valor `-1` também separa as faces. Uma face com mais de três vértices é
+triangulada em leque:
 
 ```text
 (v0, v1, v2)
@@ -136,169 +228,322 @@ Cada sequência de índices terminada em `-1` representa uma face. Faces com mai
 ...
 ```
 
-Os triângulos resultantes reutilizam `GL.triangleSet()`, mantendo um único pipeline de transformação e rasterização 3D.
+### Grafo de cena
 
-### Grafo de cena e `Transform` aninhado
-
-Para permitir `Transform` dentro de outros `Transform`, o renderizador mantém uma pilha de matrizes de modelo.
-
-Ao entrar em um nó:
+`GL.transform_in()` salva a matriz atual em `model_stack` e compõe a matriz
+local:
 
 ```text
-salva matriz atual na pilha
-        ↓
+Mlocal = T · R · S
 Mmodelo = Mmodelo · Mlocal
 ```
 
-Ao terminar os filhos desse nó:
+`GL.transform_out()` restaura a matriz do nó pai ao finalizar aquele ramo do
+grafo.
+
+---
+
+## Projeto 1.4 - Amostragem, interpolação, visibilidade e texturas
+
+| Nº | Exemplo | Onde começar | Funções relacionadas | Principal funcionalidade |
+| ---: | --- | --- | --- | --- |
+| **20** | `quadrado` | `GL._triangulo()` | `indexedFaceSet()` → `triangleSet()` → `_triangulo()` → `_perspective_interp()` | Interpolação de cores |
+| **21** | `flechas` | `GL._perspective_interp()` | `indexedFaceSet()` → `triangleSet()` → `_triangulo()` → `_perspective_interp()` | Interpolação com correção de perspectiva |
+| **22** | `textura` | `GL.indexedFaceSet()` | `_carregar_mipmaps()` → `_perspective_interp()` → `_amostrar_textura()` → `_triangulo()` | Mapeamento de textura |
+| **23** | `texturas` | `GL._gerar_mipmaps()` | `_carregar_mipmaps()` → `_gerar_mipmaps()` → `_lod_triangulo()` → `_amostrar_textura()` | Texturas e mipmapping |
+| **24** | `retangulos` | `GL._triangulo()` | `triangleSet()` → `_triangulo()` → `_sincronizar_depth_pixel()` | Z-buffer |
+| **25** | `transparente` | `GL._triangulo()` | `triangleSet()` → `_triangulo()` | Composição alpha |
+| **26** | `tri_color` | `GL._perspective_interp()` | `indexedFaceSet()` → `_perspective_interp()` → `_triangulo()` | Teste reduzido de cor por vértice |
+| **27** | `tri_textur` | `GL._amostrar_textura()` | `indexedFaceSet()` → `_perspective_interp()` → `_amostrar_textura()` | Teste reduzido de textura |
+| **28** | `dois_tri` | `GL._triangulo()` | `_triangulo()` → `_sincronizar_depth_pixel()` | Teste reduzido de profundidade |
+| **29** | `tri_trans` | `GL._triangulo()` | `_triangulo()` | Teste reduzido de transparência |
+
+### Supersampling
+
+O rasterizador utiliza supersampling **2×2**. Cada pixel contém quatro
+subamostras, avaliadas nas posições internas:
 
 ```text
-Mmodelo = matriz removida da pilha
+(0.25, 0.25)    (0.75, 0.25)
+(0.25, 0.75)    (0.75, 0.75)
 ```
 
-Dessa forma, um filho herda todas as transformações de seus ancestrais, enquanto objetos fora daquele ramo do grafo continuam usando a transformação correta.
+A função principal para acompanhar essa etapa é `GL._triangulo()`. O resultado
+final de um pixel é a média das quatro subamostras.
 
-## Exemplos
+### Coordenadas baricêntricas
 
-### Projeto 1.1 — 2D
+Também em `GL._triangulo()`, as funções de aresta geram os pesos:
 
-```sh
-python3 exemplos.py aleatorios
-python3 exemplos.py linhas_cores
-python3 exemplos.py octogono
-python3 exemplos.py linhas_cruzes
-python3 exemplos.py varias_linhas
-python3 exemplos.py circulo
-python3 exemplos.py triangulos
-python3 exemplos.py helice
-python3 exemplos.py pontas
+```text
+l0 = e1 / area
+l1 = e2 / area
+l2 = e0 / area
 ```
 
-### Projeto 1.2 — pipeline 3D
+Esses pesos são usados para interpolar profundidade, cor, UV e posição.
 
-```sh
-python3 exemplos.py um_triangulo
-python3 exemplos.py varios_triangs
-python3 exemplos.py zoom
+### Correção de perspectiva
+
+`GL._perspective_interp()` interpola os atributos usando `atributo / w` e
+`1 / w`, evitando a deformação produzida por uma interpolação puramente afim
+depois da projeção perspectiva.
+
+### Z-buffer
+
+A profundidade é armazenada por subamostra. Antes de escrever uma nova cor,
+`GL._triangulo()` compara o novo valor de Z com o valor já armazenado.
+
+### Transparência
+
+O X3D fornece `transparency`, enquanto a composição utiliza alpha:
+
+```text
+alpha = 1 - transparency
 ```
 
-### Projeto 1.3 — malhas
+Para superfícies transparentes é utilizada composição **source-over**:
 
-```sh
-python3 exemplos.py tiras
-python3 exemplos.py letras
-python3 exemplos.py leques
-python3 exemplos.py vertices10
+```text
+saida = alpha * origem + (1 - alpha) * destino
 ```
 
-### Projeto 1.3 — grafo de cena
+### Texturas e mipmaps
 
-```sh
-python3 exemplos.py bound500
-python3 exemplos.py avatar
-python3 exemplos.py girando
+O fluxo principal é:
+
+```text
+GL.indexedFaceSet()
+    ↓
+GL._carregar_mipmaps()
+    ↓
+GL._gerar_mipmaps()
+    ↓
+GL.triangleSet()
+    ↓
+GL._perspective_interp()
+    ↓
+GL._lod_triangulo()
+    ↓
+GL._amostrar_textura()
+    ↓
+GL._triangulo()
 ```
 
-Os exemplos `bound500`, `avatar` e `girando` verificam principalmente a composição e a restauração correta de transformações em diferentes níveis do grafo de cena.
+---
 
-## Estrutura
+## Projeto 1.5 - Iluminação e animação
 
-A implementação principal das operações gráficas está concentrada em `renderizador/gl.py`, na classe `GL`.
-
-O projeto utiliza um framebuffer simulado em software para armazenar os pixels gerados antes da exibição ou do salvamento da imagem final.
-
-As funções `Box`, `Sphere`, `Cone` e `Cylinder` continuam como esboços do código base. As primitivas opcionais não fazem parte desta implementação. `PointLight` e `Fog` também não estão implementados.
-
-
-## Projeto 1.4 — Amostragem, visibilidade e texturas
-
-O preenchimento de triângulos usa supersampling 2×2 ligado por padrão, com cor e
-profundidade armazenadas por subamostra. Cores e coordenadas UV são interpoladas
-com correção de perspectiva (`atributo/w` dividido pela interpolação de `1/w`).
-O Z-buffer resolve a visibilidade dos opacos; transparências usam composição
-alpha, na ordem fornecida pela cena. As texturas usam `GPU.load_texture()`, cache
-e uma pirâmide de mipmaps, selecionada pelo tamanho projetado da textura.
-
-## Projeto 1.5 — Iluminação e animação
+| Nº | Exemplo | Onde começar | Funções relacionadas | Principal funcionalidade |
+| ---: | --- | --- | --- | --- |
+| **30** | `difusos` | `GL._iluminar()` | `directionalLight()` / `navigationInfo()` → `triangleSet()` → `_iluminar()` | Iluminação difusa |
+| **31** | `mineiro` | `GL.navigationInfo()` | `navigationInfo()` → `triangleSet()` → `_iluminar()` | Headlight da câmera |
+| **32** | `senoide_difusa` | `GL._iluminar()` | `directionalLight()` → `triangleSet()` → `_iluminar()` | Variação do termo difuso |
+| **33** | `senoide_especular` | `GL._iluminar()` | `directionalLight()` → `triangleSet()` → `_iluminar()` | Termo especular / `shininess` |
+| **34** | `teapot` | `GL._iluminar()` | `indexedFaceSet()` → `triangleSet()` → `_iluminar()` | Iluminação de malha complexa |
+| **35** | `coelho` | `GL._iluminar()` | `indexedFaceSet()` → `triangleSet()` → `_iluminar()` | Iluminação de malha complexa |
+| **36** | `onda` | `GL.timeSensor()` | `timeSensor()` → `splinePositionInterpolator()` → `Transform` | Animação de posição |
+| **37** | `piramide` | `GL.timeSensor()` | `timeSensor()` → `orientationInterpolator()` → `transform_in()` | Animação de rotação |
+| **38** | `voltas` | `GL.orientationInterpolator()` | `timeSensor()` → `orientationInterpolator()` → `transform_in()` | Interpolação de orientação |
+| **39** | `danca` | `GL.timeSensor()` | `timeSensor()` → `splinePositionInterpolator()` / `orientationInterpolator()` | Posição + orientação |
+| **40** | `avatar_animado` | `GL.timeSensor()` | `timeSensor()` → interpoladores → `transform_in()` → `indexedFaceSet()` | Animação em grafo hierárquico |
 
 ### Iluminação
 
-`GL.triangleSet()` calcula a normal de cada face pelo produto vetorial de duas
-arestas já transformadas para o espaço da câmera. Assim, a normal acompanha as
-rotações e escalas não uniformes do objeto. A normal é constante por triângulo;
-a posição usada para iluminação é interpolada com correção de perspectiva.
+`GL.triangleSet()` calcula a normal da face pelo produto vetorial entre duas
+arestas no espaço da câmera.
 
-`GL._iluminar()` avalia Blinn-Phong por subamostra, somando:
+`GL._iluminar()` aplica o modelo de **Blinn-Phong**, usando:
 
-- emissivo: `emissiveColor`, independente das luzes;
-- ambiente: cor da luz × `ambientIntensity` da luz × `ambientIntensity` do
-  material × cor difusa;
-- difuso: cor da luz × intensidade × cor difusa × `max(N·L, 0)`;
-- especular: cor da luz × intensidade × `specularColor` ×
-  `max(N·H, 0) ** (128 * shininess)`, para a face voltada à luz.
+- `emissiveColor`;
+- `ambientIntensity`;
+- `diffuseColor`;
+- `specularColor`;
+- `shininess`.
 
-`L` aponta para a luz, `V` para a câmera e `H = normalize(L + V)`.
-`GL.directionalLight()` transforma a direção da luz para o espaço da câmera.
-`GL.navigationInfo()` controla o headlight: uma luz branca orientada para −Z
-nesse espaço, que acompanha a câmera. As luzes são reiniciadas a cada quadro;
-`on="false"` desativa uma luz direcional. Cenas sem Material mantêm as cores e
-texturas sem iluminação, preservando os exemplos de interpolação da parte 1.4.
+O termo difuso usa:
+
+```text
+max(N · L, 0)
+```
+
+O termo especular usa o vetor intermediário:
+
+```text
+H = normalize(L + V)
+```
+
+e:
+
+```text
+max(N · H, 0) ** (128 * shininess)
+```
+
+`GL.directionalLight()` registra e transforma a direção de uma luz direcional.
+
+`GL.navigationInfo()` implementa o **headlight**, uma luz branca que acompanha
+a câmera.
 
 ### Animação
 
-`GL.timeSensor()` usa o tempo monotônico decorrido desde o primeiro quadro.
-Divide esse tempo por `cycleInterval`: com `loop=true`, repete o ciclo; com
-`loop=false`, permanece em 1 ao terminar. Todos os sensores usam o mesmo
-instante do quadro.
-
-`GL.splinePositionInterpolator()` retorna uma posição sobre uma spline cúbica
-de Hermite, com tangentes calculadas a partir das posições vizinhas e ajuste
-para o espaçamento entre chaves. Curvas abertas começam e terminam em repouso;
-curvas fechadas com posições extremas iguais usam os vizinhos da emenda.
-
-`GL.orientationInterpolator()` converte eixo-ângulo em quaternions, interpola
-pelo menor arco com SLERP e retorna eixo-ângulo em `value_changed`. Para
-orientações muito próximas, usa interpolação linear normalizada para evitar
-instabilidade numérica.
-
-O percurso da cena processa, no mesmo quadro:
+O fluxo é:
 
 ```text
-Viewpoint e início do quadro → TimeSensor → ROUTEs dos relógios
-→ interpoladores → ROUTEs das transformações → luzes e geometria
+GL.begin_frame()
+    ↓
+GL.timeSensor()
+    ↓
+GL._intervalo_chaves()
+    ↓
+GL.splinePositionInterpolator()
+ou
+GL.orientationInterpolator()
+    ↓
+GL.transform_in()
+    ↓
+geometria atualizada
 ```
 
-O framebuffer e as subamostras de cor/profundidade são limpos a cada quadro.
-Não há implementação de double buffering. A escrita de pixels aceita preto
-(zero), necessário para superfícies sem luz, e o modo `--quiet` renderiza antes
-de salvar a imagem.
+`GL.splinePositionInterpolator()` utiliza spline cúbica de Hermite para posições.
 
-### Exemplos obrigatórios e verificação
+`GL.orientationInterpolator()` converte rotações eixo-ângulo para quaternions,
+interpola por **SLERP** e converte o resultado novamente para eixo-ângulo.
 
-Execute a partir da raiz do repositório:
+---
+
+## Exemplos extras - primitivas geométricas
+
+As primitivas abaixo são opcionais e **não estão implementadas na versão atual**.
+As funções ainda permanecem como placeholders do código base.
+
+| Nº | Exemplo | Função correspondente | Estado |
+| ---: | --- | --- | --- |
+| **41** | `duas` | `GL.box()` / `GL.sphere()` | Extra / placeholder |
+| **42** | `outras_duas` | `GL.cone()` / `GL.cylinder()` | Extra / placeholder |
+| **43** | `caixas` | `GL.box()` | Extra / placeholder |
+| **44** | `esferas` | `GL.sphere()` | Extra / placeholder |
+| **45** | `cubo` | `GL.box()` | Extra / placeholder |
+
+---
+
+# Lista completa dos exemplos
+
+Esta lista segue a numeração apresentada por `exemplos.py`.
+
+```text
+ 0: aleatorios          12: tiras              24: retangulos        36: onda
+ 1: linhas_cores        13: letras             25: transparente      37: piramide
+ 2: octogono            14: leques             26: tri_color         38: voltas
+ 3: linhas_cruzes       15: vertices10         27: tri_textur        39: danca
+ 4: varias_linhas       16: estrela            28: dois_tri          40: avatar_animado
+ 5: circulo             17: bound500           29: tri_trans         41: duas
+ 6: triangulos          18: avatar             30: difusos           42: outras_duas
+ 7: helice              19: girando            31: mineiro           43: caixas
+ 8: pontas              20: quadrado           32: senoide_difusa    44: esferas
+ 9: um_triangulo        21: flechas            33: senoide_especular 45: cubo
+10: varios_triangs      22: textura            34: teapot
+11: zoom                23: texturas           35: coelho
+```
+
+Por exemplo, no Windows:
+
+```powershell
+# zoom
+python exemplos.py 11
+
+# mesmo exemplo pelo nome
+python exemplos.py zoom
+
+# exemplos do pipeline 3D
+python exemplos.py 9..11
+
+# exemplo de Z-buffer
+python exemplos.py 24
+
+# exemplo de transparência
+python exemplos.py 25
+
+# exemplo de mipmaps/texturas
+python exemplos.py 23
+
+# iluminação difusa
+python exemplos.py 30
+
+# animação do avatar
+python exemplos.py 40
+```
+
+---
+
+## Testes
+
+### Windows
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+### Linux / macOS
 
 ```sh
-python3 exemplos.py difusos
-python3 exemplos.py mineiro
-python3 exemplos.py senoide_difusa
-python3 exemplos.py senoide_especular
-python3 exemplos.py onda
-python3 exemplos.py piramide
-python3 exemplos.py avatar_animado
 python3 -m unittest discover -s tests -v
 ```
 
-Os testes verificam os termos de iluminação, normais sob escala não uniforme,
-headlight, ciclos, splines, SLERP, atualização das transformações no mesmo quadro,
-limpeza dos buffers e renderização dos sete exemplos obrigatórios em resolução
-reduzida. Os exemplos animados abrem em modo contínuo; `-p` no renderizador
-exibe apenas o primeiro quadro.
+---
 
-A implementação permanece limitada ao subconjunto de X3D do projeto: normais
-por face calculadas da geometria, luzes direcionais declaradas na raiz da cena
-e ligações de animação `TimeSensor → interpolador → Transform`. Não implementa
-o sistema completo de eventos do X3D, normais explícitas ou suavização de normais
-entre faces.
+## Estrutura principal
 
-Referências: [iluminação X3D](https://www.web3d.org/documents/specifications/19775-1/V3.3/Part01/components/lighting.html#Lightingmodel)
-e [interpolação X3D](https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/interpolators.html#HermiteSplineInterpolation).
+A implementação das operações gráficas está concentrada em:
+
+```text
+renderizador/gl.py
+```
+
+na classe `GL`.
+
+O framebuffer é simulado em software. Os vértices e atributos são processados
+pela CPU até que a cor final de cada pixel seja escrita no framebuffer.
+
+As rotinas mais centrais do projeto são:
+
+| Função | Papel |
+| --- | --- |
+| `GL.polypoint2D()` | Rasterização de pontos 2D |
+| `GL.polyline2D()` | Entrada para polilinhas 2D |
+| `GL._linha()` | Rasterização DDA de segmentos |
+| `GL.circle2D()` | Construção do contorno de círculos |
+| `GL.triangleSet2D()` | Entrada para triângulos 2D |
+| `GL._triangulo()` | Cobertura, baricêntricas, SSAA, Z-buffer, textura, iluminação e alpha |
+| `GL.transform_in()` | Entrada em um `Transform` e composição da matriz de modelo |
+| `GL.transform_out()` | Restauração da matriz do nó pai |
+| `GL.viewpoint()` | Matriz de câmera e `fieldOfView` |
+| `GL.triangleSet()` | Pipeline de vértices 3D e projeção |
+| `GL.triangleStripSet()` | Conversão de strips em triângulos |
+| `GL.indexedTriangleStripSet()` | Conversão de strips indexadas em triângulos |
+| `GL.indexedFaceSet()` | Triangulação de faces e associação de cor/UV |
+| `GL._perspective_interp()` | Interpolação de atributos com correção perspectiva |
+| `GL._gerar_mipmaps()` | Construção da pirâmide de mipmaps |
+| `GL._lod_triangulo()` | Escolha do nível de mipmap |
+| `GL._amostrar_textura()` | Amostragem da textura |
+| `GL._iluminar()` | Iluminação Blinn-Phong |
+| `GL.navigationInfo()` | Headlight da câmera |
+| `GL.directionalLight()` | Luz direcional |
+| `GL.timeSensor()` | Fração temporal da animação |
+| `GL.splinePositionInterpolator()` | Interpolação suave de posição |
+| `GL.orientationInterpolator()` | SLERP de orientação |
+
+---
+
+## Limitações
+
+A implementação cobre o subconjunto de X3D utilizado nos projetos.
+
+Entre as limitações atuais:
+
+- `Box`, `Sphere`, `Cone` e `Cylinder` permanecem como placeholders;
+- `PointLight` e `Fog` não estão implementados;
+- as normais são calculadas por face;
+- não há suavização de normais entre faces;
+- não há implementação do sistema completo de eventos do X3D;
+- não há double buffering completo para as animações.
+
